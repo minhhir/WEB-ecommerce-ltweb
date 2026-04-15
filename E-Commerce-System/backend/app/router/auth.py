@@ -1,15 +1,13 @@
 from flask import Blueprint
 from sqlalchemy.exc import IntegrityError
-
+from flask_jwt_extended import create_access_token
 from app.extensions import db
 from app.models.user import Role, User
 from app.utils.crud import json_payload_or_error
 from app.utils.swagger_docs import auth_doc
 from app.utils.rest import api_response, error_response
 
-
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
-
 
 @bp.post("/register")
 def register():
@@ -43,7 +41,6 @@ def register():
 
 	return api_response(user.to_dict(), message="User registered", status=201)
 
-
 register.__doc__ = auth_doc("Auth", "Register user", ["name", "email", "password", "role_id|role_name"])
 
 
@@ -57,7 +54,10 @@ def login():
 	if user is None or not user.check_password(payload["password"]):
 		return error_response("Invalid email or password", status=401)
 
-	return api_response(user.to_dict(), message="Login successful")
-
+	token = create_access_token(identity=str(user.id))
+	return api_response(
+		{"user": user.to_dict(), "access_token": token},
+		message="Login successful"
+	)
 
 login.__doc__ = auth_doc("Auth", "Login user", ["email", "password"])

@@ -49,8 +49,12 @@ def apply_search(query, model, search_term, search_fields):
 
 
 def paginate_query(query, default_per_page=10):
-    page = max(int(request.args.get("page", 1)), 1)
-    per_page = max(int(request.args.get("per_page", default_per_page)), 1)
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        per_page = max(int(request.args.get("per_page", default_per_page)), 1)
+    except (ValueError, TypeError):
+        page = 1
+        per_page = default_per_page
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
     return pagination.items, {
         "page": pagination.page,

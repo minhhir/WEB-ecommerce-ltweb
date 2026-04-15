@@ -21,6 +21,11 @@ interface RegisterForm {
   role_id: RoleId;
 }
 
+interface LoginResponse {
+  user: User;
+  access_token: string;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const { message } = AntApp.useApp();
@@ -39,10 +44,11 @@ export default function LoginPage() {
   const handleLogin = async (values: LoginForm) => {
     setLoading(true);
     try {
-      const user = await api.post<User, LoginForm>("/api/auth/login", values);
-      login(user);
-      message.success(`Xin chao ${user.name}`);
-      router.replace(getRoleHome(user.role_id));
+      // Gọi API bắt kiểu LoginResponse
+      const res = await api.post<LoginResponse, LoginForm>("/api/auth/login", values);
+      login(res.user, res.access_token);
+      message.success(`Xin chao ${res.user.name}`);
+      router.replace(getRoleHome(res.user.role_id));
     } catch (error) {
       const err = error as Error;
       message.error(err.message);

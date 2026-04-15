@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager
 
 from app.config import get_config
 from app.extensions import db, swagger
@@ -8,10 +9,10 @@ from app.router import register_blueprints
 
 
 def seed_defaults():
-	if not Role.query.filter_by(name="admin").first():
-		db.session.add(Role(name="admin"))
-	if not Role.query.filter_by(name="user").first():
-		db.session.add(Role(name="user"))
+	roles = ["admin", "seller", "buyer"]
+	for role_name in roles:
+		if not Role.query.filter_by(name=role_name).first():
+			db.session.add(Role(name=role_name))
 
 	default_statuses = ["pending", "processing", "completed", "cancelled"]
 	existing_statuses = {row.name for row in OrderStatus.query.all()}
@@ -20,7 +21,6 @@ def seed_defaults():
 			db.session.add(OrderStatus(name=status_name))
 
 	db.session.commit()
-
 
 def create_app():
 	app = Flask(__name__)
@@ -36,6 +36,7 @@ def create_app():
 
 	db.init_app(app)
 	swagger.init_app(app)
+	jwt = JWTManager(app)
 
 	with app.app_context():
 		from app import models  # noqa: F401

@@ -9,7 +9,7 @@ from app.models.user import Role, User
 from app.utils.crud import json_payload_or_error
 from app.utils.swagger_docs import collection_doc, create_doc, delete_doc, foreign_key_doc, item_doc, update_doc
 from app.utils.rest import api_response, apply_search, error_response, paginate_query, serialize_model
-
+from app.utils.auth import require_auth, require_role
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
