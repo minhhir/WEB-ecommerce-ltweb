@@ -16,15 +16,16 @@ class Order(db.Model, SerializerMixin, CrudMixin, TimestampMixin):
 
 	id = db.Column(db.Integer, primary_key=True)
 	user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+	seller_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
 	total_price = db.Column(db.Numeric(15, 2), nullable=False)
 	status_id = db.Column(db.Integer, db.ForeignKey("order_statuses.id"), nullable=False)
 	voucher_discount = db.Column(db.Numeric(15, 2), nullable=False, server_default="0")
 
-	user = db.relationship("User", lazy="joined")
+	user = db.relationship("User", foreign_keys=[user_id], lazy="joined")
+	seller = db.relationship("User", foreign_keys=[seller_id], lazy="joined")
 	status = db.relationship("OrderStatus", back_populates="orders", lazy="joined")
 	items = db.relationship("OrderItem", back_populates="order", cascade="all, delete-orphan", lazy="select")
-
-
+	order_items = db.relationship("OrderItem", back_populates="order", cascade="all, delete-orphan", lazy="select")
 class OrderItem(db.Model, SerializerMixin, CrudMixin):
 	__tablename__ = "order_items"
 

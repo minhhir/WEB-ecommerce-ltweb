@@ -13,6 +13,54 @@ interface ProductBrowserProps {
   allowPurchase?: boolean;
 }
 
+interface VariantAttribute {
+  variant_id: number;
+  option_value_id: number;
+}
+
+interface OrderCreatePayload {
+  user_id: number;
+  seller_id: number;
+  total_price: number;
+  status_id: number;
+  voucher_discount: number;
+}
+
+const ORDER_STATUS_IDS = {
+  PENDING: 1,
+  CONFIRMED: 2,
+  SHIPPING: 3,
+  DELIVERED: 4,
+  CANCELED: 5,
+  PROCESSING: 6,
+  COMPLETED: 7,
+} as const;
+
+function getVariantOptionValueIds(variant: ProductVariant): number[] {
+  return (variant.option_value_ids ?? []).filter((value) => Number.isFinite(value));
+}
+
+function groupValuesByOption(optionValues: ProductOptionValue[]): Record<number, ProductOptionValue[]> {
+  return optionValues.reduce<Record<number, ProductOptionValue[]>>((accumulator, value) => {
+    const currentValues = accumulator[value.option_id] ?? [];
+    accumulator[value.option_id] = [...currentValues, value];
+    return accumulator;
+  }, {});
+}
+
+function buildSelectionFromVariant(variant: ProductVariant, optionValues: ProductOptionValue[]): Record<number, number> {
+  const selection: Record<number, number> = {};
+  const variantOptionValueIds = new Set(getVariantOptionValueIds(variant));
+
+  optionValues.forEach((value) => {
+    if (variantOptionValueIds.has(value.id)) {
+      selection[value.option_id] = value.id;
+    }
+  });
+
+  return selection;
+}
+
 export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowserProps>) {
   const { message } = AntApp.useApp();
   const { currentUser } = useSession();
@@ -24,16 +72,107 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
   const [productOptions, setProductOptions] = useState<ProductOption[]>([]);
   const [optionValues, setOptionValues] = useState<ProductOptionValue[]>([]);
   const [detailVisible, setDetailVisible] = useState(false);
-  const [variantId, setVariantId] = useState<number | null>(null);
+  const [selectedOptionValueIds, setSelectedOptionValueIds] = useState<Record<number, number>>({});
   const [quantity, setQuantity] = useState(1);
   const [cartVisible, setCartVisible] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
+
+  const optionValuesByOption = useMemo(() => groupValuesByOption(optionValues), [optionValues]);
+
+  const selectedVariant = useMemo(() => {
+    const selectedIds = Object.values(selectedOptionValueIds).filter(Boolean);
+    if (selectedIds.length === 0 || productVariants.length === 0) {
+      return null;
+    }
+
+    const directMatch = productVariants.find((variant) => {
+      const rawIds = getVariantOptionValueIds(variant);
+      if (rawIds.length === 0 || rawIds.length !== selectedIds.length) {
+        return false;
+      }
+
+      return selectedIds.every((id) => rawIds.includes(id));
+    });
+
+    if (directMatch) {
+      return directMatch;
+    }
+
+    const selectedValueTexts = optionValues
+      .filter((value) => selectedIds.includes(value.id))
+      .map((value) => value.value.trim().toLowerCase())
+      .filter((value) => value.length > 0);
+
+    if (selectedValueTexts.length === 0) {
+      return null;
+    }
+
+    return (
+      productVariants.find((variant) => {
+        const sku = variant.sku_code.toLowerCase();
+        return selectedValueTexts.every((valueText) => sku.includes(valueText));
+      }) ?? null
+    );
+  }, [optionValues, productVariants, selectedOptionValueIds]);
 
   const totalCart = useMemo(
     () => cart.reduce((accumulator, item) => accumulator + item.unitPrice * item.quantity, 0),
     [cart],
   );
 
+  const hasAnyVariantOptionMapping = useMemo(
+    () => productVariants.some((variant) => getVariantOptionValueIds(variant).length > 0),
+    [productVariants],
+  );
+
+  const fetchVariantOptionValueIds = async (variantId: number): Promise<number[]> => {
+    const candidatePaths = [
+      `/api/variant-attributes/by-variant/${variantId}`,
+      `/api/variant-attributes/by-variant-id/${variantId}`,
+      `/api/variant-attributes?variant_id=${variantId}`,
+    ];
+
+    for (const path of candidatePaths) {
+      try {
+        const attributes = await api.get<VariantAttribute[]>(path);
+        const optionValueIds = attributes
+          .map((attribute) => attribute.option_value_id)
+          .filter((value) => Number.isFinite(value));
+        if (optionValueIds.length > 0) {
+          return optionValueIds;
+        }
+      } catch {
+        // Try next candidate path silently.
+      }
+    }
+
+    return [];
+  };
+
+  const hasAvailableCombination = (candidateSelections: Record<number, number>) => {
+    const candidateIds = Object.values(candidateSelections).filter(Boolean);
+    if (candidateIds.length === 0) {
+      return false;
+    }
+
+    return productVariants.some((variant) => {
+      const variantOptionValueIds = getVariantOptionValueIds(variant);
+      return variant.stock > 0 && candidateIds.every((id) => variantOptionValueIds.includes(id));
+    });
+  };
+
+  const isOptionValueDisabled = (optionId: number, valueId: number) => {
+    if (!hasAnyVariantOptionMapping) {
+      return false;
+    }
+
+    const candidateSelections = {
+      ...selectedOptionValueIds,
+      [optionId]: valueId,
+    };
+
+    return !hasAvailableCombination(candidateSelections);
+  };
   useEffect(() => {
     setLoading(true);
     Promise.all([
@@ -42,33 +181,73 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     ])
       .then(([productData, statuses]) => {
         setProducts(productData);
-        setOrderStatuses(statuses.length > 0 ? statuses : [{ id: 1, name: "pending" }]);
+        setOrderStatuses(statuses.length > 0 ? statuses : [{ id: ORDER_STATUS_IDS.PENDING, name: "dang cho" }]);
       })
       .catch((error: Error) => message.error(error.message))
       .finally(() => setLoading(false));
   }, [allowPurchase, message]);
 
   const fetchProductDetail = async (product: Product) => {
+    setLoading(true);
     setSelectedProduct(product);
     setDetailVisible(true);
-    setVariantId(null);
+    setSelectedOptionValueIds({});
     setQuantity(1);
 
-    const [variants, options] = await Promise.all([
-      api.get<ProductVariant[]>(`/api/product-variants/by-product/${product.id}`),
-      api.get<ProductOption[]>(`/api/product-options/by-product/${product.id}`),
-    ]);
+    try {
+      const [variantData, options] = await Promise.all([
+        api.get<ProductVariant[]>(`/api/product-variants/by-product/${product.id}`),
+        api.get<ProductOption[]>(`/api/product-options/by-product/${product.id}`),
+      ]);
 
-    setProductVariants(variants);
-    setProductOptions(options);
+      const variants = await Promise.all(
+        variantData.map(async (variant) => {
+          const existingOptionValueIds = getVariantOptionValueIds(variant);
+          if (existingOptionValueIds.length > 0) {
+            return variant;
+          }
 
-    const valuesByOption = await Promise.all(
-      options.map((option) => api.get<ProductOptionValue[]>(`/api/product-option-values/by-option/${option.id}`)),
-    );
-    setOptionValues(valuesByOption.flat());
+          const hydratedOptionValueIds = await fetchVariantOptionValueIds(variant.id);
+          return {
+            ...variant,
+            option_value_ids: hydratedOptionValueIds,
+          };
+        }),
+      );
 
-    if (variants.length > 0) {
-      setVariantId(variants[0].id);
+      setProductVariants(variants);
+      setProductOptions(options);
+
+      const valuesByOption = await Promise.all(
+        options.map((option) => api.get<ProductOptionValue[]>(`/api/product-option-values/by-option/${option.id}`)),
+      );
+      const flattenedValues = valuesByOption.flat();
+      const groupedValues = groupValuesByOption(flattenedValues);
+      setOptionValues(flattenedValues);
+
+      const preferredVariant =
+        variants.find((variant) => variant.stock > 0 && getVariantOptionValueIds(variant).length > 0) ??
+        variants.find((variant) => getVariantOptionValueIds(variant).length > 0) ??
+        variants[0] ??
+        null;
+
+      if (preferredVariant) {
+        setSelectedOptionValueIds(buildSelectionFromVariant(preferredVariant, flattenedValues));
+      } else {
+        const defaultSelections: Record<number, number> = {};
+        options.forEach((option) => {
+          const firstValue = groupedValues[option.id]?.[0];
+          if (firstValue) {
+            defaultSelections[option.id] = firstValue.id;
+          }
+        });
+        setSelectedOptionValueIds(defaultSelections);
+      }
+    } catch (error) {
+      const err = error as Error;
+      message.error(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -77,22 +256,29 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       return;
     }
 
-    if (!selectedProduct || !variantId) {
+    if (!selectedProduct || !selectedVariant) {
       message.warning("Hay chon bien the san pham");
       return;
     }
 
-    const variant = productVariants.find((item) => item.id === variantId);
-    if (!variant) {
-      message.warning("Khong tim thay bien the");
+    if (selectedVariant.stock <= 0) {
+      message.warning("Bien the nay da het hang");
       return;
     }
 
+    const missingOption = productOptions.find(
+      (option) => optionValues.some((value) => value.option_id === option.id) && !selectedOptionValueIds[option.id],
+    );
+
+    const selectedValues = optionValues.filter((value) => selectedOptionValueIds[value.option_id] === value.id);
+    const optionSummary = selectedValues.length > 0 ? selectedValues.map((value) => value.value).join(" / ") : undefined;
+    const lineKey = `${selectedVariant.id}-${selectedValues.map((value) => value.id).sort((a, b) => a - b).join("-") || "base"}`;
+
     setCart((previous) => {
-      const existing = previous.find((item) => item.variantId === variant.id);
+      const existing = previous.find((item) => item.lineKey === lineKey);
       if (existing) {
         return previous.map((item) =>
-          item.variantId === variant.id
+          item.lineKey === lineKey
             ? {
                 ...item,
                 quantity: item.quantity + quantity,
@@ -104,12 +290,15 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       return [
         ...previous,
         {
-          variantId: variant.id,
+          lineKey,
+          variantId: selectedVariant.id,
           productId: selectedProduct.id,
+          sellerId: selectedProduct.seller_id,
           productName: selectedProduct.name,
-          skuCode: variant.sku_code,
-          unitPrice: variant.price,
+          skuCode: selectedVariant.sku_code,
+          unitPrice: selectedVariant.price,
           quantity,
+          optionSummary,
         },
       ];
     });
@@ -120,8 +309,8 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     }
   };
 
-  const removeCartItem = (variantIdToRemove: number) => {
-    setCart((previous) => previous.filter((item) => item.variantId !== variantIdToRemove));
+  const removeCartItem = (lineKeyToRemove: string) => {
+    setCart((previous) => previous.filter((item) => item.lineKey !== lineKeyToRemove));
   };
 
   const placeOrder = async () => {
@@ -139,30 +328,41 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       return;
     }
 
-    const pendingStatus = orderStatuses.find((item) => item.name.toLowerCase().includes("pending"));
-    const statusId = pendingStatus?.id ?? orderStatuses[0]?.id ?? 1;
+    const statusId = orderStatuses.some((item) => item.id === ORDER_STATUS_IDS.PENDING)
+      ? ORDER_STATUS_IDS.PENDING
+      : orderStatuses[0]?.id ?? ORDER_STATUS_IDS.PENDING;
+    const cartBySeller = cart.reduce<Record<number, CartItem[]>>((accumulator, item) => {
+      const currentItems = accumulator[item.sellerId] ?? [];
+      accumulator[item.sellerId] = [...currentItems, item];
+      return accumulator;
+    }, {});
 
     setLoading(true);
     try {
-      const order = await api.post<Order, Pick<Order, "user_id" | "total_price" | "status_id" | "voucher_discount">>(
-        "/api/orders",
-        {
-          user_id: currentUser.id,
-          total_price: totalCart,
-          status_id: statusId,
-          voucher_discount: 0,
-        },
-      );
-
       await Promise.all(
-        cart.map((item) =>
-          api.post<OrderItem, Omit<OrderItem, "id">>("/api/order-items", {
-            order_id: order.id,
-            variant_id: item.variantId,
-            unit_price: item.unitPrice,
-            quantity: item.quantity,
-          }),
-        ),
+        Object.entries(cartBySeller).map(async ([sellerIdText, sellerItems]) => {
+          const sellerId = Number(sellerIdText);
+          const sellerTotal = sellerItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+
+          const order = await api.post<Order, OrderCreatePayload>("/api/orders", {
+            user_id: currentUser.id,
+            seller_id: sellerId,
+            total_price: sellerTotal,
+            status_id: statusId,
+            voucher_discount: 0,
+          });
+
+          await Promise.all(
+            sellerItems.map((item) =>
+              api.post<OrderItem, Omit<OrderItem, "id">>("/api/order-items", {
+                order_id: order.id,
+                variant_id: item.variantId,
+                unit_price: item.unitPrice,
+                quantity: item.quantity,
+              }),
+            ),
+          );
+        }),
       );
 
       message.success("Dat hang thanh cong");
@@ -175,6 +375,16 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       setLoading(false);
     }
   };
+
+  const selectedValueTextByOptionId = useMemo(() => {
+    return productOptions.reduce<Record<number, string>>((accumulator, option) => {
+      const selectedValue = optionValues.find((value) => value.option_id === option.id && selectedOptionValueIds[option.id] === value.id);
+      if (selectedValue) {
+        accumulator[option.id] = selectedValue.value;
+      }
+      return accumulator;
+    }, {});
+  }, [optionValues, productOptions, selectedOptionValueIds]);
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -192,7 +402,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
               title={product.name}
               extra={<Tag color="green">-{product.discount ?? 0}%</Tag>}
               actions={[
-                <Button type="link" key="detail" onClick={() => fetchProductDetail(product)}>
+                <Button type="link" key="detail" onClick={() => void fetchProductDetail(product)}>
                   Xem chi tiet
                 </Button>,
                 allowPurchase ? (
@@ -233,10 +443,10 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                 <Button key="close" onClick={() => setDetailVisible(false)}>
                   Dong
                 </Button>,
-                <Button key="cart" type="primary" onClick={() => addToCart(false)}>
+                <Button key="cart" type="primary" onClick={() => addToCart(false)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
                   Them vao gio
                 </Button>,
-                <Button key="buy" type="primary" onClick={() => addToCart(true)}>
+                <Button key="buy" type="primary" onClick={() => addToCart(true)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
                   Mua ngay
                 </Button>,
               ]
@@ -252,41 +462,58 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
 
           {productOptions.length > 0 && (
             <Card size="small" title="Lua chon san pham">
-              <Space wrap>
+              <Space direction="vertical" style={{ width: "100%" }}>
                 {productOptions.map((option) => (
-                  <Tag key={option.id} color="cyan">
-                    {option.name}: {optionValues.filter((value) => value.option_id === option.id).map((value) => value.value).join(", ")}
-                  </Tag>
+                  <Form.Item key={option.id} label={option.name} style={{ marginBottom: 8 }}>
+                    <Select
+                      value={selectedOptionValueIds[option.id]}
+                      onChange={(value) =>
+                        setSelectedOptionValueIds((previous) => ({
+                          ...previous,
+                          [option.id]: value,
+                        }))
+                      }
+                      options={(optionValuesByOption[option.id] ?? []).map((value) => ({
+                        value: value.id,
+                        label: `${value.value}`,
+                        disabled: isOptionValueDisabled(option.id, value.id),
+                      }))}
+                      placeholder={`Chon ${option.name}`}
+                    />
+                  </Form.Item>
                 ))}
               </Space>
             </Card>
           )}
 
-          {allowPurchase ? (
+          <Card size="small" title="Bien the duoc chon">
+            {selectedVariant ? (
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <Text>SKU: {selectedVariant.sku_code}</Text>
+                <Text>Gia: {selectedVariant.price} VND</Text>
+                <Text>
+                  Ton kho: <Tag color={selectedVariant.stock > 0 ? "green" : "red"}>{selectedVariant.stock}</Tag>
+                </Text>
+                {Object.keys(selectedValueTextByOptionId).length > 0 && (
+                  <Space wrap>
+                    {productOptions.map((option) => {
+                      const valueText = selectedValueTextByOptionId[option.id];
+                      return valueText ? <Tag key={option.id}>{`${option.name}: ${valueText}`}</Tag> : null;
+                    })}
+                  </Space>
+                )}
+              </Space>
+            ) : (
+              <Text type="secondary">Khong tim thay bien the phu hop voi lua chon hien tai</Text>
+            )}
+          </Card>
+
+          {allowPurchase && (
             <Form layout="vertical">
-              <Form.Item label="Bien the">
-                <Select
-                  value={variantId ?? undefined}
-                  onChange={(value) => setVariantId(value)}
-                  options={productVariants.map((variant) => ({
-                    value: variant.id,
-                    label: `${variant.sku_code} | ${variant.price} VND | stock ${variant.stock}`,
-                  }))}
-                  placeholder="Chon bien the"
-                />
-              </Form.Item>
               <Form.Item label="So luong">
-                <InputNumber min={1} value={quantity} onChange={(value) => setQuantity(value || 1)} style={{ width: "100%" }} />
+                <InputNumber min={1} max={selectedVariant?.stock || 1} value={quantity} onChange={(value) => setQuantity(value || 1)} style={{ width: "100%" }} />
               </Form.Item>
             </Form>
-          ) : (
-            <Card size="small" title="Bien the">
-              <Space direction="vertical" style={{ width: "100%" }}>
-                {productVariants.map((variant) => (
-                  <Text key={variant.id}>{`${variant.sku_code} | ${variant.price} VND | stock ${variant.stock}`}</Text>
-                ))}
-              </Space>
-            </Card>
           )}
         </Space>
       </Modal>
@@ -316,7 +543,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                     onChange={(value) => {
                       setCart((previous) =>
                         previous.map((line) =>
-                          line.variantId === item.variantId
+                          line.lineKey === item.lineKey
                             ? {
                                 ...line,
                                 quantity: value || 1,
@@ -326,14 +553,14 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                       );
                     }}
                   />,
-                  <Button danger key="remove" onClick={() => removeCartItem(item.variantId)}>
+                  <Button danger key="remove" onClick={() => removeCartItem(item.lineKey)}>
                     Xoa
                   </Button>,
                 ]}
               >
                 <List.Item.Meta
                   title={`${item.productName} (${item.skuCode})`}
-                  description={`${item.unitPrice} VND x ${item.quantity}`}
+                  description={`${item.optionSummary ? `${item.optionSummary} | ` : ""}${item.unitPrice} VND x ${item.quantity}`}
                 />
               </List.Item>
             )}

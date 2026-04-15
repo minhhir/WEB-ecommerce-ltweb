@@ -117,18 +117,22 @@ def _order_serializer(order):
 	data = serialize_model(order)
 	data["user_name"] = order.user.name if order.user else None
 	data["user_email"] = order.user.email if order.user else None
+	data["seller_name"] = order.seller.name if order.seller else None
+	data["seller_email"] = order.seller.email if order.seller else None
 	data["status_name"] = order.status.name if order.status else None
 	data["items_count"] = len(order.items) if order.items is not None else 0
+	data["order_items"] = [_item_serializer(item) for item in order.items] if order.items is not None else []
 	return data
 
 
 def _order_query(search_term):
-	query = Order.query.join(User).join(OrderStatus).order_by(Order.id.asc())
+	query = Order.query.join(User, Order.user_id == User.id).join(OrderStatus).order_by(Order.id.asc())
 	if search_term:
 		query = query.filter(
 			or_(
 				cast(Order.id, String).ilike(f"%{search_term}%"),
 				cast(Order.user_id, String).ilike(f"%{search_term}%"),
+				cast(Order.seller_id, String).ilike(f"%{search_term}%"),
 				OrderStatus.name.ilike(f"%{search_term}%"),
 				User.name.ilike(f"%{search_term}%"),
 				User.email.ilike(f"%{search_term}%"),
@@ -141,11 +145,15 @@ def _create_order(payload):
 	user, error = _fk(User, payload["user_id"], "User")
 	if error:
 		return error
+	seller, error = _fk(User, payload["seller_id"], "Seller")
+	if error:
+		return error
 	status, error = _fk(OrderStatus, payload["status_id"], "Order status")
 	if error:
 		return error
 	order = Order(
 		user_id=user.id,
+		seller_id=seller.id,
 		total_price=payload["total_price"],
 		status_id=status.id,
 		voucher_discount=payload.get("voucher_discount", 0),
@@ -159,6 +167,11 @@ def _update_order(instance, payload):
 		if error:
 			return error
 		instance.user_id = user.id
+	if "seller_id" in payload:
+		seller, error = _fk(User, payload["seller_id"], "Seller")
+		if error:
+			return error
+		instance.seller_id = seller.id
 	if "status_id" in payload:
 		status, error = _fk(OrderStatus, payload["status_id"], "Order status")
 		if error:
@@ -171,8 +184,8 @@ _register_resource(
 	"orders",
 	Order,
 	"Order",
-	["user_id", "total_price", "status_id"],
-	["user_id", "total_price", "status_id", "voucher_discount"],
+	["user_id", "seller_id", "total_price", "status_id"],
+	["user_id", "seller_id", "total_price", "status_id", "voucher_discount"],
 	_order_serializer,
 	_order_query,
 	create_builder=_create_order,
@@ -208,11 +221,18 @@ def _create_item(payload):
 	variant, error = _fk(ProductVariant, payload["variant_id"], "Product variant")
 	if error:
 		return error
+	quantity = payload["quantity"]
+	if quantity <= 0:
+		return error_response("Quantity must be greater than 0", status=400)
+	remaining_stock = variant.stock - quantity
+	if remaining_stock < 0:
+		return error_response("Out of stock for selected variant", status=400)
+	variant.stock = remaining_stock
 	item = OrderItem(
 		order_id=order.id,
 		variant_id=variant.id,
 		unit_price=payload["unit_price"],
-		quantity=payload["quantity"],
+		quantity=quantity,
 	)
 	return _commit(item, "Order item created", status=201)
 
@@ -262,6 +282,16 @@ def list_orders_by_status(status_id):
 
 
 list_orders_by_status.__doc__ = foreign_key_doc("Orders", "orders", "status_id")
+
+
+@bp.get("/orders/by-seller/<int:seller_id>")
+def list_orders_by_seller(seller_id):
+	query = Order.query.filter_by(seller_id=seller_id).order_by(Order.id.asc())
+	items, meta = paginate_query(query)
+	return api_response([_order_serializer(item) for item in items], meta=meta)
+
+
+list_orders_by_seller.__doc__ = foreign_key_doc("Orders", "orders", "seller_id")
 
 
 @bp.get("/order-items/by-order/<int:order_id>")

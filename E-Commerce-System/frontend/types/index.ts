@@ -54,6 +54,7 @@ export interface ProductVariant {
   sku_code: string;
   price: number;
   stock: number;
+  option_value_ids?: number[];
   product_name?: string;
 }
 
@@ -65,6 +66,7 @@ export interface Category {
 export interface Order {
   id: number;
   user_id: number;
+  seller_id?: number;
   total_price: number;
   status_id: number;
   status_name?: string;
@@ -86,10 +88,13 @@ export interface OrderItem {
 }
 
 export interface CartItem {
+  lineKey: string;
   variantId: number;
   productId: number;
+  sellerId: number;
   productName: string;
   skuCode: string;
   unitPrice: number;
   quantity: number;
+  optionSummary?: string;
 }

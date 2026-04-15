@@ -1,8 +1,8 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { Button, Layout, Space, Tag, Typography } from "antd";
-import { LogoutOutlined, ShopOutlined, UserOutlined } from "@ant-design/icons";
+import { Button, Dropdown, Layout, Space, Tag, Typography } from "antd";
+import { DownOutlined, LogoutOutlined, ShopOutlined, UserOutlined } from "@ant-design/icons";
 import { getRoleHome, useSession } from "@/components/session-provider";
 
 const { Header, Content } = Layout;
@@ -56,6 +56,22 @@ export function EcommerceShell({
           <Button type={pathname === "/marketplace" ? "primary" : "default"} onClick={() => router.push("/marketplace")}>
             Trang mua sam
           </Button>
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  key: "my-orders",
+                  label: "Xem danh sach don hang",
+                  onClick: () => router.push("/my-orders"),
+                },
+              ],
+            }}
+            trigger={["hover"]}
+          >
+            <Button type={pathname === "/my-orders" ? "primary" : "default"}>
+              Don hang <DownOutlined />
+            </Button>
+          </Dropdown>
           {showSellerPage && (
             <Button type={pathname === "/seller" ? "primary" : "default"} onClick={() => router.push("/seller")}>
               Kho nguoi ban

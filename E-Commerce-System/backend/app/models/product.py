@@ -44,7 +44,6 @@ class ProductOptionValue(db.Model, SerializerMixin, CrudMixin):
 	id = db.Column(db.Integer, primary_key=True)
 	option_id = db.Column(db.Integer, db.ForeignKey("product_options.id", ondelete="CASCADE"), nullable=False)
 	value = db.Column(db.String(100), nullable=False)
-	addition_price = db.Column(db.Numeric(15, 2), nullable=False, server_default="0")
 
 	option = db.relationship("ProductOption", back_populates="values", lazy="joined")
 

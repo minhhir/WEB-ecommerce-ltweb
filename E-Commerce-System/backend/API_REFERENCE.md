@@ -584,7 +584,7 @@ Request body:
 Model: `Order`
 Response schema:
 ```json
-{ "message": "Success", "data": "Order" }
+{ "message": "Success", "data": { "Order": "includes order_items" } }
 ```
 
 ### PUT/PATCH /api/orders/<item_id>

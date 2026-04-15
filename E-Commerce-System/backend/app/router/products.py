@@ -257,7 +257,10 @@ def _create_value(payload):
 	option, error = _fk(ProductOption, payload["option_id"], "Product option")
 	if error:
 		return error
-	value = ProductOptionValue(option_id=option.id, value=payload["value"])
+	value = ProductOptionValue(
+		option_id=option.id,
+		value=payload["value"],
+	)
 	return _commit(value, "Product option value created", status=201)
 
 
@@ -277,7 +280,7 @@ _register_resource(
 	["option_id", "value"],
 	["option_id", "value"],
 	_value_serializer,
-	_value_query,
+	_value_query,	
 	create_builder=_create_value,
 	update_builder=_update_value,
 )
