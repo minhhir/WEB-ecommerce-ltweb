@@ -7,7 +7,7 @@ import { ProductBrowser } from "@/components/product-browser";
 export default function MarketplacePage() {
   return (
     <RoleGate allowedRoles={[1, 2, 3]}>
-      <EcommerceShell title="Trang mua sam" description="Khach mua, nguoi ban va admin deu co the xem giao dien nay; chi role mua moi dat hang duoc.">
+      <EcommerceShell title="Trang mua sắm" description="Tích cực mua hàng vận may sẽ tới">
         <ProductBrowser allowPurchase/>
       </EcommerceShell>
     </RoleGate>

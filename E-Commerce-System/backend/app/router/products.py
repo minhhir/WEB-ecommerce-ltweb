@@ -13,6 +13,7 @@ from app.models.product import (
 )
 from app.models.user import User
 from app.utils.crud import json_payload_or_error
+from app.utils.cloudinary_service import upload_product_image
 from app.utils.swagger_docs import collection_doc, create_doc, delete_doc, foreign_key_doc, item_doc, update_doc
 from app.utils.rest import api_response, error_response, paginate_query, serialize_model
 
@@ -121,6 +122,7 @@ def _product_serializer(product):
 	data = serialize_model(product)
 	data["seller_name"] = product.seller.name if product.seller else None
 	data["category_name"] = product.category.name if product.category else None
+	data["product_variants"] = [_variant_serializer(variant) for variant in product.variants] if product.variants is not None else []
 	return data
 
 
@@ -149,6 +151,7 @@ def _create_product(payload):
 	product = Product(
 		name=payload["name"],
 		description=payload.get("description"),
+		image_src=payload.get("image_src"),
 		seller_id=seller.id,
 		category_id=category.id,
 		discount=payload.get("discount", 0),
@@ -175,12 +178,68 @@ _register_resource(
 	Product,
 	"Product",
 	["name", "seller_id", "category_id"],
-	["name", "description", "seller_id", "category_id", "discount"],
+	["name", "description", "image_src", "seller_id", "category_id", "discount"],
 	_product_serializer,
 	_product_query,
 	create_builder=_create_product,
 	update_builder=_update_product,
 )
+
+
+@bp.post("/products/<int:product_id>/image")
+def upload_image_for_product(product_id):
+	product = db.session.get(Product, product_id)
+	if product is None:
+		return _not_found("Product")
+
+	image_file = request.files.get("image")
+	if image_file is None:
+		return error_response("Missing image file. Use form-data key 'image'", status=400)
+
+	try:
+		image_url = upload_product_image(image_file, folder=f"ecommerce/products/{product_id}")
+	except ValueError as exc:
+		return error_response(str(exc), status=400)
+	except RuntimeError as exc:
+		return error_response(str(exc), status=500)
+
+	product.image_src = image_url
+	try:
+		db.session.commit()
+	except IntegrityError as exc:
+		db.session.rollback()
+		return error_response(str(exc.orig), status=400)
+
+	return api_response(_product_serializer(product), message="Product image uploaded")
+
+
+upload_image_for_product.__doc__ = """Upload product image
+---
+tags:
+  - Products
+consumes:
+  - multipart/form-data
+parameters:
+  - in: path
+    name: product_id
+    required: true
+    schema:
+      type: integer
+  - in: formData
+    name: image
+    type: file
+    required: true
+    description: Product image file
+responses:
+  200:
+    description: Product image uploaded
+  400:
+    description: Missing image file or validation error
+  404:
+    description: Not found
+  500:
+    description: Cloudinary configuration or upload error
+"""
 
 
 def _option_serializer(option):
@@ -289,6 +348,7 @@ _register_resource(
 def _variant_serializer(variant):
 	data = serialize_model(variant)
 	data["product_name"] = variant.product.name if variant.product else None
+	data["variant_attributes"] = [_variant_attribute_serializer(attribute) for attribute in variant.attributes] if variant.attributes is not None else []
 	return data
 
 
@@ -370,10 +430,13 @@ def _create_variant_attribute(payload):
 	variant, error = _fk(ProductVariant, payload["variant_id"], "Product variant")
 	if error:
 		return error
-	option_value, error = _fk(ProductOptionValue, payload["option_value_id"], "Product option value")
-	if error:
-		return error
-	attribute = VariantAttribute(variant_id=variant.id, option_value_id=option_value.id)
+	option_value_id = None
+	if "option_value_id" in payload and payload["option_value_id"] is not None:
+		option_value, error = _fk(ProductOptionValue, payload["option_value_id"], "Product option value")
+		if error:
+			return error
+		option_value_id = option_value.id
+	attribute = VariantAttribute(variant_id=variant.id, option_value_id=option_value_id)
 	return _commit(attribute, "Variant attribute created", status=201)
 
 
@@ -384,10 +447,13 @@ def _update_variant_attribute(instance, payload):
 			return error
 		instance.variant_id = variant.id
 	if "option_value_id" in payload:
-		option_value, error = _fk(ProductOptionValue, payload["option_value_id"], "Product option value")
-		if error:
-			return error
-		instance.option_value_id = option_value.id
+		if payload["option_value_id"] is None:
+			instance.option_value_id = None
+		else:
+			option_value, error = _fk(ProductOptionValue, payload["option_value_id"], "Product option value")
+			if error:
+				return error
+			instance.option_value_id = option_value.id
 	return None
 
 
@@ -395,7 +461,7 @@ _register_resource(
 	"variant-attributes",
 	VariantAttribute,
 	"Variant attribute",
-	["variant_id", "option_value_id"],
+	["variant_id"],
 	["variant_id", "option_value_id"],
 	_variant_attribute_serializer,
 	_variant_attribute_query,

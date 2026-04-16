@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { App as AntApp, Button, Card, Col, Drawer, Empty, Form, InputNumber, List, Modal, Row, Select, Space, Tag, Typography } from "antd";
 import { ShoppingCartOutlined } from "@ant-design/icons";
-import { api } from "@/lib/api";
+import { API_BASE_URL, api } from "@/lib/api";
 import { CartItem, Order, OrderItem, Product, ProductOption, ProductOptionValue, ProductVariant } from "@/types";
 import { useSession } from "@/components/session-provider";
 
@@ -13,9 +13,21 @@ interface ProductBrowserProps {
   allowPurchase?: boolean;
 }
 
-interface VariantAttribute {
+interface VariantAttributeDetail {
+  id: number;
   variant_id: number;
-  option_value_id: number;
+  option_value_id: number | null;
+  option_name?: string | null;
+  option_value?: string | null;
+  variant_sku_code?: string;
+}
+
+interface ProductVariantDetail extends ProductVariant {
+  variant_attributes?: VariantAttributeDetail[];
+}
+
+interface ProductDetailApiData extends Product {
+  product_variants?: ProductVariantDetail[];
 }
 
 interface OrderCreatePayload {
@@ -24,6 +36,13 @@ interface OrderCreatePayload {
   total_price: number;
   status_id: number;
   voucher_discount: number;
+}
+
+interface ProductPriceRange {
+  minPrice: number;
+  maxPrice: number;
+  minDiscountedPrice: number;
+  maxDiscountedPrice: number;
 }
 
 const ORDER_STATUS_IDS = {
@@ -37,7 +56,7 @@ const ORDER_STATUS_IDS = {
 } as const;
 
 function getVariantOptionValueIds(variant: ProductVariant): number[] {
-  return (variant.option_value_ids ?? []).filter((value) => Number.isFinite(value));
+  return (variant.option_value_ids ?? []).filter((value): value is number => Number.isFinite(value));
 }
 
 function groupValuesByOption(optionValues: ProductOptionValue[]): Record<number, ProductOptionValue[]> {
@@ -50,7 +69,7 @@ function groupValuesByOption(optionValues: ProductOptionValue[]): Record<number,
 
 function buildSelectionFromVariant(variant: ProductVariant, optionValues: ProductOptionValue[]): Record<number, number> {
   const selection: Record<number, number> = {};
-  const variantOptionValueIds = new Set(getVariantOptionValueIds(variant));
+  const variantOptionValueIds = new Set(getVariantOptionValueIds(variant).filter((v): v is number => v !== null));
 
   optionValues.forEach((value) => {
     if (variantOptionValueIds.has(value.id)) {
@@ -59,6 +78,56 @@ function buildSelectionFromVariant(variant: ProductVariant, optionValues: Produc
   });
 
   return selection;
+}
+
+function formatCurrency(amount: number): string {
+  return new Intl.NumberFormat("vi-VN").format(Math.round(amount));
+}
+
+function applyDiscount(price: number, discountPercent?: number): number {
+  const safeDiscount = Math.max(0, Math.min(99, discountPercent ?? 0));
+  return Math.round(price * (1 - safeDiscount / 100));
+}
+
+function buildPriceRange(variants: ProductVariant[], discountPercent?: number): ProductPriceRange | null {
+  const prices = variants.map((variant) => variant.price).filter((price) => Number.isFinite(price));
+  if (prices.length === 0) {
+    return null;
+  }
+
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  return {
+    minPrice,
+    maxPrice,
+    minDiscountedPrice: applyDiscount(minPrice, discountPercent),
+    maxDiscountedPrice: applyDiscount(maxPrice, discountPercent),
+  };
+}
+
+function formatPriceRange(minPrice: number, maxPrice: number): string {
+  if (minPrice === maxPrice) {
+    return `${formatCurrency(minPrice)} VND`;
+  }
+
+  return `${formatCurrency(minPrice)} - ${formatCurrency(maxPrice)} VND`;
+}
+
+function resolveProductImageUrl(product: Product): string | undefined {
+  const rawUrl = product.image_src ;
+  if (!rawUrl) {
+    return undefined;
+  }
+
+  if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+    return rawUrl;
+  }
+
+  if (rawUrl.startsWith("/")) {
+    return `${API_BASE_URL}${rawUrl}`;
+  }
+
+  return `${API_BASE_URL}/${rawUrl}`;
 }
 
 export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowserProps>) {
@@ -76,12 +145,46 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
   const [quantity, setQuantity] = useState(1);
   const [cartVisible, setCartVisible] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [noOptionVariantIds, setNoOptionVariantIds] = useState<number[]>([]);
+  const [priceRangesByProductId, setPriceRangesByProductId] = useState<Record<number, ProductPriceRange>>({});
 
   const optionValuesByOption = useMemo(() => groupValuesByOption(optionValues), [optionValues]);
 
   const selectedVariant = useMemo(() => {
+    if (productVariants.length === 0) {
+      return null;
+    }
+
+    // Nếu không có options, ưu tiên biến thể có variant_attributes.option_value_id = null
+    if (productOptions.length === 0) {
+      const noOptionVariantWithStock = productVariants.find((variant) => noOptionVariantIds.includes(variant.id) && variant.stock > 0);
+      if (noOptionVariantWithStock) {
+        return noOptionVariantWithStock;
+      }
+
+      const noOptionVariant = productVariants.find((variant) => noOptionVariantIds.includes(variant.id));
+      if (noOptionVariant) {
+        return noOptionVariant;
+      }
+
+      return productVariants.find((variant) => variant.stock > 0) ?? productVariants[0] ?? null;
+    }
+
+    // Có options: tìm biến thể khớp với lựa chọn
     const selectedIds = Object.values(selectedOptionValueIds).filter(Boolean);
-    if (selectedIds.length === 0 || productVariants.length === 0) {
+    if (selectedIds.length === 0) {
+      // Nếu chưa chọn options nhưng có biến thể "không lựa chọn" (option_value_id = null),
+      // ưu tiên hiển thị biến thể này để vẫn có thể mua được.
+      const noOptionVariantWithStock = productVariants.find((variant) => noOptionVariantIds.includes(variant.id) && variant.stock > 0);
+      if (noOptionVariantWithStock) {
+        return noOptionVariantWithStock;
+      }
+
+      const noOptionVariant = productVariants.find((variant) => noOptionVariantIds.includes(variant.id));
+      if (noOptionVariant) {
+        return noOptionVariant;
+      }
+
       return null;
     }
 
@@ -113,7 +216,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
         return selectedValueTexts.every((valueText) => sku.includes(valueText));
       }) ?? null
     );
-  }, [optionValues, productVariants, selectedOptionValueIds]);
+  }, [noOptionVariantIds, optionValues, productOptions, productVariants, selectedOptionValueIds]);
 
   const totalCart = useMemo(
     () => cart.reduce((accumulator, item) => accumulator + item.unitPrice * item.quantity, 0),
@@ -121,33 +224,13 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
   );
 
   const hasAnyVariantOptionMapping = useMemo(
-    () => productVariants.some((variant) => getVariantOptionValueIds(variant).length > 0),
+    () => productVariants.some((variant) => {
+      const ids = getVariantOptionValueIds(variant);
+      // Coi như có mapping nếu có null (no-option variant) hoặc có number IDs
+      return ids.length > 0;
+    }),
     [productVariants],
   );
-
-  const fetchVariantOptionValueIds = async (variantId: number): Promise<number[]> => {
-    const candidatePaths = [
-      `/api/variant-attributes/by-variant/${variantId}`,
-      `/api/variant-attributes/by-variant-id/${variantId}`,
-      `/api/variant-attributes?variant_id=${variantId}`,
-    ];
-
-    for (const path of candidatePaths) {
-      try {
-        const attributes = await api.get<VariantAttribute[]>(path);
-        const optionValueIds = attributes
-          .map((attribute) => attribute.option_value_id)
-          .filter((value) => Number.isFinite(value));
-        if (optionValueIds.length > 0) {
-          return optionValueIds;
-        }
-      } catch {
-        // Try next candidate path silently.
-      }
-    }
-
-    return [];
-  };
 
   const hasAvailableCombination = (candidateSelections: Record<number, number>) => {
     const candidateIds = Object.values(candidateSelections).filter(Boolean);
@@ -156,7 +239,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     }
 
     return productVariants.some((variant) => {
-      const variantOptionValueIds = getVariantOptionValueIds(variant);
+      const variantOptionValueIds = getVariantOptionValueIds(variant).filter((v): v is number => v !== null);
       return variant.stock > 0 && candidateIds.every((id) => variantOptionValueIds.includes(id));
     });
   };
@@ -179,9 +262,37 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       api.get<Product[]>("/api/products"),
       allowPurchase ? api.get<Array<{ id: number; name: string }>>("/api/admin/order-statuses") : Promise.resolve([]),
     ])
-      .then(([productData, statuses]) => {
-        setProducts(productData);
-        setOrderStatuses(statuses.length > 0 ? statuses : [{ id: ORDER_STATUS_IDS.PENDING, name: "dang cho" }]);
+      .then(async ([productData, statuses]) => {
+        // Lọc sản phẩm: chỉ hiển thị những sản phẩm có ít nhất 1 biến thể và tính khoảng giá min/max theo biến thể.
+        const productsWithVariants = await Promise.all(
+          productData.map(async (product) => {
+            try {
+              const variants = await api.get<ProductVariant[]>(`/api/product-variants/by-product/${product.id}`);
+              return {
+                product,
+                variants,
+              };
+            } catch {
+              return {
+                product,
+                variants: [],
+              };
+            }
+          }),
+        );
+
+        const filteredProducts = productsWithVariants.filter((item) => item.variants.length > 0);
+        const priceRanges = filteredProducts.reduce<Record<number, ProductPriceRange>>((accumulator, item) => {
+          const range = buildPriceRange(item.variants, item.product.discount);
+          if (range) {
+            accumulator[item.product.id] = range;
+          }
+          return accumulator;
+        }, {});
+
+        setProducts(filteredProducts.map((item) => item.product));
+        setPriceRangesByProductId(priceRanges);
+        setOrderStatuses(statuses.length > 0 ? statuses : [{ id: ORDER_STATUS_IDS.PENDING, name: "đang chờ" }]);
       })
       .catch((error: Error) => message.error(error.message))
       .finally(() => setLoading(false));
@@ -195,27 +306,27 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     setQuantity(1);
 
     try {
-      const [variantData, options] = await Promise.all([
-        api.get<ProductVariant[]>(`/api/product-variants/by-product/${product.id}`),
+      const [productDetail, options] = await Promise.all([
+        api.get<ProductDetailApiData>(`/api/products/${product.id}`),
         api.get<ProductOption[]>(`/api/product-options/by-product/${product.id}`),
       ]);
 
-      const variants = await Promise.all(
-        variantData.map(async (variant) => {
-          const existingOptionValueIds = getVariantOptionValueIds(variant);
-          if (existingOptionValueIds.length > 0) {
-            return variant;
-          }
+      setSelectedProduct(productDetail);
 
-          const hydratedOptionValueIds = await fetchVariantOptionValueIds(variant.id);
-          return {
-            ...variant,
-            option_value_ids: hydratedOptionValueIds,
-          };
-        }),
-      );
+      const detailVariants = productDetail.product_variants ?? [];
+      const variants: ProductVariant[] = detailVariants.map((variant) => ({
+        ...variant,
+        option_value_ids: (variant.variant_attributes ?? [])
+          .map((attribute) => attribute.option_value_id)
+          .filter((value): value is number => Number.isFinite(value)),
+      }));
+
+      const noOptionIds = detailVariants
+        .filter((variant) => (variant.variant_attributes ?? []).some((attribute) => attribute.option_value_id === null))
+        .map((variant) => variant.id);
 
       setProductVariants(variants);
+      setNoOptionVariantIds(noOptionIds);
       setProductOptions(options);
 
       const valuesByOption = await Promise.all(
@@ -225,23 +336,35 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       const groupedValues = groupValuesByOption(flattenedValues);
       setOptionValues(flattenedValues);
 
-      const preferredVariant =
-        variants.find((variant) => variant.stock > 0 && getVariantOptionValueIds(variant).length > 0) ??
-        variants.find((variant) => getVariantOptionValueIds(variant).length > 0) ??
-        variants[0] ??
-        null;
+      // Nếu sản phẩm có options
+      if (options.length > 0) {
+        const preferredVariant =
+          variants.find((variant) => {
+            const ids = getVariantOptionValueIds(variant);
+            return variant.stock > 0 && ids.length > 0;
+          }) ??
+          variants.find((variant) => {
+            const ids = getVariantOptionValueIds(variant);
+            return ids.length > 0;
+          }) ??
+          variants[0] ??
+          null;
 
-      if (preferredVariant) {
-        setSelectedOptionValueIds(buildSelectionFromVariant(preferredVariant, flattenedValues));
+        if (preferredVariant) {
+          setSelectedOptionValueIds(buildSelectionFromVariant(preferredVariant, flattenedValues));
+        } else {
+          const defaultSelections: Record<number, number> = {};
+          options.forEach((option) => {
+            const firstValue = groupedValues[option.id]?.[0];
+            if (firstValue) {
+              defaultSelections[option.id] = firstValue.id;
+            }
+          });
+          setSelectedOptionValueIds(defaultSelections);
+        }
       } else {
-        const defaultSelections: Record<number, number> = {};
-        options.forEach((option) => {
-          const firstValue = groupedValues[option.id]?.[0];
-          if (firstValue) {
-            defaultSelections[option.id] = firstValue.id;
-          }
-        });
-        setSelectedOptionValueIds(defaultSelections);
+        // Sản phẩm không có options: khởi tạo selectedOptionValueIds rỗng
+        setSelectedOptionValueIds({});
       }
     } catch (error) {
       const err = error as Error;
@@ -257,18 +380,14 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     }
 
     if (!selectedProduct || !selectedVariant) {
-      message.warning("Hay chon bien the san pham");
+      message.warning("Hãy chọn biến thể sản phẩm");
       return;
     }
 
     if (selectedVariant.stock <= 0) {
-      message.warning("Bien the nay da het hang");
+      message.warning("Biến thể này đã hết hàng");
       return;
     }
-
-    const missingOption = productOptions.find(
-      (option) => optionValues.some((value) => value.option_id === option.id) && !selectedOptionValueIds[option.id],
-    );
 
     const selectedValues = optionValues.filter((value) => selectedOptionValueIds[value.option_id] === value.id);
     const optionSummary = selectedValues.length > 0 ? selectedValues.map((value) => value.value).join(" / ") : undefined;
@@ -303,7 +422,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
       ];
     });
 
-    message.success("Da them vao gio hang");
+    message.success("Đã thêm vào giỏ hàng");
     if (buyNow) {
       setCartVisible(true);
     }
@@ -319,12 +438,12 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     }
 
     if (!currentUser) {
-      message.warning("Hay dang nhap");
+      message.warning("Hãy đăng nhập");
       return;
     }
 
     if (cart.length === 0) {
-      message.warning("Gio hang dang trong");
+      message.warning("Giỏ hàng đang trống");
       return;
     }
 
@@ -365,7 +484,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
         }),
       );
 
-      message.success("Dat hang thanh cong");
+      message.success("Đặt hàng thành công");
       setCart([]);
       setCartVisible(false);
     } catch (error) {
@@ -390,61 +509,74 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {allowPurchase && (
         <Button icon={<ShoppingCartOutlined />} onClick={() => setCartVisible(true)} disabled={cart.length === 0}>
-          Gio hang ({cart.length})
+          Giỏ hàng ({cart.length})
         </Button>
       )}
 
       <Row gutter={[16, 16]}>
         {products.map((product) => (
           <Col xs={24} sm={12} lg={8} key={product.id}>
+            {(() => {
+              const imageUrl = resolveProductImageUrl(product);
+              const range = priceRangesByProductId[product.id];
+              const hasDiscount = (product.discount ?? 0) > 0;
+              const originalPriceLabel = range ? formatPriceRange(range.minPrice, range.maxPrice) : "Đang cập nhật";
+              const discountedPriceLabel = range ? formatPriceRange(range.minDiscountedPrice, range.maxDiscountedPrice) : "Đang cập nhật";
+
+              return (
             <Card
               className="surface-card"
               title={product.name}
               extra={<Tag color="green">-{product.discount ?? 0}%</Tag>}
+              cover={
+                imageUrl ? (
+                  <img src={imageUrl} alt={product.name} style={{ height: 220, width: "100%", objectFit: "cover" }} />
+                ) : (
+                  <div className="flex h-[220px] items-center justify-center bg-slate-100 text-slate-500">Chưa có ảnh sản phẩm</div>
+                )
+              }
               actions={[
                 <Button type="link" key="detail" onClick={() => void fetchProductDetail(product)}>
-                  Xem chi tiet
-                </Button>,
-                allowPurchase ? (
-                  <Button
-                    type="link"
-                    key="buy"
-                    onClick={async () => {
-                      await fetchProductDetail(product);
-                      setCartVisible(true);
-                    }}
-                  >
-                    Mua
-                  </Button>
-                ) : (
-                  <span key="view-only">Xem</span>
-                ),
+                  Xem chi tiết
+                </Button>
               ]}
             >
-              <Paragraph ellipsis={{ rows: 2 }}>{product.description || "San pham dang cap nhat mo ta"}</Paragraph>
+              <Paragraph ellipsis={{ rows: 2 }}>{product.description || "Sản phẩm đang cập nhật mô tả"}</Paragraph>
+              <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                {hasDiscount && (
+                  <Text type="secondary" delete>
+                    Giá gốc: {originalPriceLabel}
+                  </Text>
+                )}
+                <Text strong style={{ color: "#c2410c" }}>
+                  Giá bán: {hasDiscount ? discountedPriceLabel : originalPriceLabel}
+                </Text>
+              </Space>
               <Space>
-                <Tag color="blue">{product.category_name || `Category #${product.category_id}`}</Tag>
+                <Tag color="blue">{product.category_name || `Danh mục #${product.category_id}`}</Tag>
                 <Tag color="gold">Shop: {product.seller_name || product.seller_id}</Tag>
               </Space>
             </Card>
+              );
+            })()}
           </Col>
         ))}
       </Row>
 
-      {!loading && products.length === 0 && <Empty description="Chua co san pham" />}
+      {!loading && products.length === 0 && <Empty description="Chưa có sản phẩm" />}
 
       <Modal
         open={detailVisible}
-        title={selectedProduct?.name || "Chi tiet"}
+        title={selectedProduct?.name || "Chi tiết"}
         onCancel={() => setDetailVisible(false)}
         footer={
           allowPurchase
             ? [
                 <Button key="close" onClick={() => setDetailVisible(false)}>
-                  Dong
+                  Đóng
                 </Button>,
                 <Button key="cart" type="primary" onClick={() => addToCart(false)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
-                  Them vao gio
+                  Thêm vào giỏ
                 </Button>,
                 <Button key="buy" type="primary" onClick={() => addToCart(true)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
                   Mua ngay
@@ -452,20 +584,21 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
               ]
             : [
                 <Button key="close" type="primary" onClick={() => setDetailVisible(false)}>
-                  Dong
+                  Đóng
                 </Button>,
               ]
         }
       >
         <Space direction="vertical" size={10} style={{ width: "100%" }}>
-          <Paragraph>{selectedProduct?.description || "Khong co mo ta"}</Paragraph>
+          <Paragraph>{selectedProduct?.description || "Không có mô tả"}</Paragraph>
 
           {productOptions.length > 0 && (
-            <Card size="small" title="Lua chon san pham">
+            <Card size="small" title="Lựa chọn sản phẩm">
               <Space direction="vertical" style={{ width: "100%" }}>
                 {productOptions.map((option) => (
                   <Form.Item key={option.id} label={option.name} style={{ marginBottom: 8 }}>
                     <Select
+                    allowClear
                       value={selectedOptionValueIds[option.id]}
                       onChange={(value) =>
                         setSelectedOptionValueIds((previous) => ({
@@ -478,7 +611,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                         label: `${value.value}`,
                         disabled: isOptionValueDisabled(option.id, value.id),
                       }))}
-                      placeholder={`Chon ${option.name}`}
+                      placeholder={`Chọn ${option.name}`}
                     />
                   </Form.Item>
                 ))}
@@ -486,13 +619,13 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
             </Card>
           )}
 
-          <Card size="small" title="Bien the duoc chon">
+          <Card size="small" title="Chi tiết sản phẩm">
             {selectedVariant ? (
               <Space direction="vertical" style={{ width: "100%" }}>
-                <Text>SKU: {selectedVariant.sku_code}</Text>
-                <Text>Gia: {selectedVariant.price} VND</Text>
+                <Text>Mã SKU: {selectedVariant.sku_code}</Text>
+                <Text>Giá: {selectedVariant.price} VND</Text>
                 <Text>
-                  Ton kho: <Tag color={selectedVariant.stock > 0 ? "green" : "red"}>{selectedVariant.stock}</Tag>
+                  Tồn kho: <Tag color={selectedVariant.stock > 0 ? "green" : "red"}>{selectedVariant.stock}</Tag>
                 </Text>
                 {Object.keys(selectedValueTextByOptionId).length > 0 && (
                   <Space wrap>
@@ -504,13 +637,13 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                 )}
               </Space>
             ) : (
-              <Text type="secondary">Khong tim thay bien the phu hop voi lua chon hien tai</Text>
+              <Text type="secondary">Không tìm thấy biến thể phù hợp</Text>
             )}
           </Card>
 
           {allowPurchase && (
             <Form layout="vertical">
-              <Form.Item label="So luong">
+              <Form.Item label="Số lượng">
                 <InputNumber min={1} max={selectedVariant?.stock || 1} value={quantity} onChange={(value) => setQuantity(value || 1)} style={{ width: "100%" }} />
               </Form.Item>
             </Form>
@@ -520,19 +653,19 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
 
       {allowPurchase && (
         <Drawer
-          title="Gio hang"
+          title="Giỏ hàng"
           open={cartVisible}
           onClose={() => setCartVisible(false)}
           width={460}
           extra={
             <Button type="primary" onClick={placeOrder} disabled={cart.length === 0 || !currentUser} loading={loading}>
-              Dat hang
+              Đặt hàng
             </Button>
           }
         >
           <List
             dataSource={cart}
-            locale={{ emptyText: "Gio hang trong" }}
+            locale={{ emptyText: "Giỏ hàng trống" }}
             renderItem={(item) => (
               <List.Item
                 actions={[
@@ -554,7 +687,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
                     }}
                   />,
                   <Button danger key="remove" onClick={() => removeCartItem(item.lineKey)}>
-                    Xoa
+                    Xóa
                   </Button>,
                 ]}
               >
@@ -566,7 +699,7 @@ export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowser
             )}
           />
           <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-3">
-            <Text strong>Tong tien: {totalCart} VND</Text>
+            <Text strong>Tổng tiền: {totalCart} VND</Text>
           </div>
         </Drawer>
       )}

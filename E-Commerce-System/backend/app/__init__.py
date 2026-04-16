@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
+from sqlalchemy import text
 
 from app.config import get_config
 from app.extensions import db, swagger
@@ -22,6 +23,12 @@ def seed_defaults():
 	db.session.commit()
 
 
+def ensure_runtime_schema():
+	# Keeps local database in sync for lightweight schema updates without migrations.
+	db.session.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS image_src VARCHAR(512)"))
+	db.session.commit()
+
+
 def create_app():
 	app = Flask(__name__)
 	app.config.from_object(get_config())
@@ -41,6 +48,7 @@ def create_app():
 		from app import models  # noqa: F401
 
 		db.create_all()
+		ensure_runtime_schema()
 		seed_defaults()
 
 	register_blueprints(app)

@@ -1,3 +1,5 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from flask import Blueprint, request
 from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +14,42 @@ from app.utils.rest import api_response, error_response, paginate_query, seriali
 
 
 bp = Blueprint("orders", __name__, url_prefix="/api")
+_MONEY_QUANTIZER = Decimal("0.01")
+
+
+def _decimal(value):
+	if isinstance(value, Decimal):
+		return value
+	if value is None:
+		return Decimal("0")
+	return Decimal(str(value))
+
+
+def _money(value):
+	return _decimal(value).quantize(_MONEY_QUANTIZER, rounding=ROUND_HALF_UP)
+
+
+def _discounted_unit_price(variant):
+	base_price = _decimal(variant.price)
+	discount_percent = _decimal(variant.product.discount if variant.product else 0)
+	discounted_price = base_price * (Decimal("1") - (discount_percent / Decimal("100")))
+	return _money(max(discounted_price, Decimal("0")))
+
+
+def _order_total(order, extra_item=None, excluded_item=None):
+	subtotal = Decimal("0")
+	for item in order.items or []:
+		if excluded_item is not None and item.id == excluded_item.id:
+			continue
+		subtotal += _decimal(item.unit_price) * _decimal(item.quantity)
+	if extra_item is not None:
+		subtotal += _decimal(extra_item.unit_price) * _decimal(extra_item.quantity)
+	total = subtotal - _decimal(order.voucher_discount)
+	return _money(max(total, Decimal("0")))
+
+
+def _recalculate_order_total(order, extra_item=None, excluded_item=None):
+	order.total_price = _order_total(order, extra_item=extra_item, excluded_item=excluded_item)
 
 
 def _not_found(label):
@@ -51,7 +89,19 @@ def _update_and_commit(instance, payload, fields, after_update=None, message="Up
 	return api_response(instance.to_dict(), message=message)
 
 
-def _register_resource(resource_name, model, label, create_fields, update_fields, serializer, list_query_builder, create_builder=None, update_builder=None):
+def _register_resource(
+	resource_name,
+	model,
+	label,
+	create_fields,
+	update_fields,
+	serializer,
+	list_query_builder,
+	create_builder=None,
+	update_builder=None,
+	update_after_update=None,
+	delete_builder=None,
+):
 	def list_items():
 		search_term = request.args.get("q") or request.args.get("search")
 		query = list_query_builder(search_term) if list_query_builder else model.query.order_by(model.id.asc())
@@ -84,12 +134,16 @@ def _register_resource(resource_name, model, label, create_fields, update_fields
 			built = update_builder(instance, payload)
 			if built is not None:
 				return built
-		return _update_and_commit(instance, payload, update_fields, message=f"{label} updated")
+		return _update_and_commit(instance, payload, update_fields, after_update=update_after_update, message=f"{label} updated")
 
 	def delete_item(item_id):
 		instance = db.session.get(model, item_id)
 		if instance is None:
 			return _not_found(label)
+		if delete_builder:
+			built = delete_builder(instance)
+			if built is not None:
+				return built
 		db.session.delete(instance)
 		try:
 			db.session.commit()
@@ -154,9 +208,9 @@ def _create_order(payload):
 	order = Order(
 		user_id=user.id,
 		seller_id=seller.id,
-		total_price=payload["total_price"],
+		total_price=_money(0),
 		status_id=status.id,
-		voucher_discount=payload.get("voucher_discount", 0),
+		voucher_discount=_money(payload.get("voucher_discount", 0)),
 	)
 	return _commit(order, "Order created", status=201)
 
@@ -180,16 +234,22 @@ def _update_order(instance, payload):
 	return None
 
 
+def _after_order_update(instance, payload):
+	_recalculate_order_total(instance)
+	return None
+
+
 _register_resource(
 	"orders",
 	Order,
 	"Order",
-	["user_id", "seller_id", "total_price", "status_id"],
-	["user_id", "seller_id", "total_price", "status_id", "voucher_discount"],
+	["user_id", "seller_id", "status_id"],
+	["user_id", "seller_id", "status_id", "voucher_discount"],
 	_order_serializer,
 	_order_query,
 	create_builder=_create_order,
 	update_builder=_update_order,
+	update_after_update=_after_order_update,
 )
 
 
@@ -231,13 +291,15 @@ def _create_item(payload):
 	item = OrderItem(
 		order_id=order.id,
 		variant_id=variant.id,
-		unit_price=payload["unit_price"],
+		unit_price=_discounted_unit_price(variant),
 		quantity=quantity,
 	)
+	_recalculate_order_total(order, extra_item=item)
 	return _commit(item, "Order item created", status=201)
 
 
 def _update_item(instance, payload):
+	previous_order_id = instance.order_id
 	if "order_id" in payload:
 		order, error = _fk(Order, payload["order_id"], "Order")
 		if error:
@@ -248,6 +310,32 @@ def _update_item(instance, payload):
 		if error:
 			return error
 		instance.variant_id = variant.id
+		instance.unit_price = _discounted_unit_price(variant)
+	if previous_order_id != instance.order_id:
+		instance._previous_order_id = previous_order_id
+	return None
+
+
+def _after_item_update(instance, payload):
+	previous_order_id = getattr(instance, "_previous_order_id", None)
+	current_order = db.session.get(Order, instance.order_id)
+	if current_order is not None:
+		_recalculate_order_total(current_order)
+	if previous_order_id is not None and previous_order_id != instance.order_id:
+		previous_order = db.session.get(Order, previous_order_id)
+		if previous_order is not None:
+			_recalculate_order_total(previous_order)
+		try:
+			delattr(instance, "_previous_order_id")
+		except AttributeError:
+			pass
+	return None
+
+
+def _before_item_delete(instance):
+	order = instance.order or db.session.get(Order, instance.order_id)
+	if order is not None:
+		_recalculate_order_total(order, excluded_item=instance)
 	return None
 
 
@@ -255,12 +343,14 @@ _register_resource(
 	"order-items",
 	OrderItem,
 	"Order item",
-	["order_id", "variant_id", "unit_price", "quantity"],
-	["order_id", "variant_id", "unit_price", "quantity"],
+	["order_id", "variant_id", "quantity"],
+	["order_id", "variant_id", "quantity"],
 	_item_serializer,
 	_item_query,
 	create_builder=_create_item,
 	update_builder=_update_item,
+	update_after_update=_after_item_update,
+	delete_builder=_before_item_delete,
 )
 
 

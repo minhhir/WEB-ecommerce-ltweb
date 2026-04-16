@@ -41,7 +41,7 @@ export default function LoginPage() {
     try {
       const user = await api.post<User, LoginForm>("/api/auth/login", values);
       login(user);
-      message.success(`Xin chao ${user.name}`);
+      message.success(`Xin chào ${user.name}`);
       router.replace(getRoleHome(user.role_id));
     } catch (error) {
       const err = error as Error;
@@ -55,7 +55,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await api.post<User, RegisterForm>("/api/auth/register", values);
-      message.success("Dang ky thanh cong, hay dang nhap");
+      message.success("Đăng ký thành công, bạn có thể đăng nhập ngay bây giờ");
       registerForm.resetFields();
       setRegisterVisible(false);
     } catch (error) {
@@ -72,24 +72,23 @@ export default function LoginPage() {
         <Row gutter={[24, 24]} align="middle">
           <Col xs={24} lg={14}>
             <Space direction="vertical" size={8}>
-              <Title level={2}>Nen tang thuong mai dien tu theo role</Title>
-              <Text type="secondary">Dang nhap de vao dung page theo vai tro cua ban.</Text>
+              <Title level={2}>Nền tảng thương mại điện tử</Title>
             </Space>
           </Col>
           <Col xs={24} lg={10}>
-            <Card className="surface-card" title="Dang nhap">
+            <Card className="surface-card" title="Đăng nhập">
               <Form form={loginForm} layout="vertical" onFinish={handleLogin}>
                 <Form.Item name="email" label="Email" rules={[{ required: true }]}>
                   <Input placeholder="d@example.com" />
                 </Form.Item>
-                <Form.Item name="password" label="Mat khau" rules={[{ required: true }]}>
+                <Form.Item name="password" label="Mật khẩu" rules={[{ required: true }]}>
                   <Input.Password placeholder="123456" />
                 </Form.Item>
                 <Button type="primary" htmlType="submit" block loading={loading}>
-                  Dang nhap
+                  Đăng nhập
                 </Button>
                 <Button block style={{ marginTop: 12 }} onClick={() => setRegisterVisible(true)}>
-                  Dang ky
+                  Đăng ký
                 </Button>
               </Form>
             </Card>
@@ -97,27 +96,27 @@ export default function LoginPage() {
         </Row>
       </Card>
 
-      <Modal open={registerVisible} title="Dang ky tai khoan" onCancel={() => setRegisterVisible(false)} footer={null}>
+      <Modal open={registerVisible} title="Đăng ký tài khoản" onCancel={() => setRegisterVisible(false)} footer={null}>
         <Form form={registerForm} layout="vertical" onFinish={handleRegister} initialValues={{ role_id: 3 }}>
-          <Form.Item name="name" label="Ho va ten" rules={[{ required: true }]}>
+          <Form.Item name="name" label="Họ và tên" rules={[{ required: true }]}>
             <Input placeholder="Nguyen Van A" />
           </Form.Item>
           <Form.Item name="email" label="Email" rules={[{ required: true }]}>
             <Input placeholder="a@example.com" />
           </Form.Item>
-          <Form.Item name="password" label="Mat khau" rules={[{ required: true }]}>
+          <Form.Item name="password" label="Mật khẩu" rules={[{ required: true }]}>
             <Input.Password placeholder="123456" />
           </Form.Item>
-          <Form.Item name="role_id" label="Vai tro">
+          <Form.Item name="role_id" label="Vai trò">
             <Select
               options={[
-                { value: 3, label: "Nguoi mua" },
-                { value: 2, label: "Nguoi ban" },
+                { value: 3, label: "Người mua" },
+                { value: 2, label: "Người bán" },
               ]}
             />
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={loading}>
-            Tao tai khoan
+            Đăng ký
           </Button>
         </Form>
       </Modal>

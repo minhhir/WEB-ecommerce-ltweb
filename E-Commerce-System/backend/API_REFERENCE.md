@@ -63,6 +63,7 @@ Tai lieu nay tong hop toan bo API dang ton tai trong he thong.
   "id": 1,
   "name": "Ao thun",
   "description": "Cotton",
+  "image_src": "https://res.cloudinary.com/.../image/upload/.../ao-thun.jpg",
   "seller_id": 2,
   "category_id": 1,
   "discount": 10.0,
@@ -244,6 +245,17 @@ Request body:
 Model: `OrderStatus`
 Request body: none
 
+### POST /api/products/<product_id>/image
+Model: `Product`
+Content-Type: `multipart/form-data`
+Form-data:
+- `image`: file image
+
+Response schema:
+```json
+{ "message": "Product image uploaded", "data": "Product" }
+```
+
 ### GET /api/admin/users
 Model: `User`
 Response schema:
@@ -334,6 +346,7 @@ Response schema:
 ```json
 { "message": "Success", "data": ["Product"], "meta": "PaginationMeta" }
 ```
+Note: each product includes `product_variants` and each variant includes `variant_attributes`
 
 ### POST /api/products
 Model: `Product`
@@ -354,6 +367,7 @@ Response schema:
 ```json
 { "message": "Success", "data": "Product" }
 ```
+Note: product detail includes `product_variants` and each variant includes `variant_attributes`
 
 ### PUT/PATCH /api/products/<item_id>
 Model: `Product`
@@ -524,8 +538,9 @@ Response schema:
 Model: `VariantAttribute`
 Request body:
 ```json
-{ "variant_id": 1, "option_value_id": 1 }
+{ "variant_id": 1 }
 ```
+Note: `option_value_id` is optional (can be set via PUT/PATCH)
 
 ### GET /api/variant-attributes/<item_id>
 Model: `VariantAttribute`
@@ -574,7 +589,6 @@ Request body:
 ```json
 {
   "user_id": 2,
-  "total_price": 398000,
   "status_id": 1,
   "voucher_discount": 10000
 }
@@ -593,7 +607,6 @@ Request body:
 ```json
 {
   "user_id": 2,
-  "total_price": 500000,
   "status_id": 2,
   "voucher_discount": 0
 }
@@ -631,7 +644,6 @@ Request body:
 {
   "order_id": 1,
   "variant_id": 1,
-  "unit_price": 199000,
   "quantity": 2
 }
 ```
@@ -650,7 +662,6 @@ Request body:
 {
   "order_id": 1,
   "variant_id": 1,
-  "unit_price": 209000,
   "quantity": 1
 }
 ```
