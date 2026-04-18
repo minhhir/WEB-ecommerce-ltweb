@@ -116,6 +116,7 @@ export default function MyOrdersPage() {
   const { currentUser } = useSession();
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState<OrderWithItems[]>([]);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<number[]>([]);
 
   const loadOrders = useCallback(async () => {
     if (!currentUser) {
@@ -140,25 +141,38 @@ export default function MyOrdersPage() {
       .finally(() => setLoading(false));
   }, [loadOrders, message]);
 
-  const cancelOrder = async (order: OrderWithItems) => {
-    if (!CANCELLABLE_STATUS_IDS.has(order.status_id)) {
-      message.warning("Không được phép được hủy đơn hàng này");
+  useEffect(() => {
+    setSelectedOrderIds((previous) => previous.filter((id) => orders.some((order) => order.id === id)));
+  }, [orders]);
+
+  const cancelOrders = async (ordersToCancel: OrderWithItems[]) => {
+    if (ordersToCancel.length === 0) {
+      message.warning("Vui lòng chọn đơn hàng cần hủy");
+      return;
+    }
+
+    const invalidOrders = ordersToCancel.filter((order) => !CANCELLABLE_STATUS_IDS.has(order.status_id));
+    if (invalidOrders.length > 0) {
+      message.warning("Có đơn hàng không ở trạng thái cho phép hủy");
       return;
     }
 
     setLoading(true);
     try {
-      await api.patch<Order, Pick<Order, "status_id">>(`/api/orders/${order.id}`, {
-        status_id: ORDER_STATUS_IDS.CANCELED,
-      });
-      for (const item of order.items) {
-        const productVariant =await api.get<ProductVariant>(`/api/product-variants/${item?.variant_id}`);
-        const productStock = productVariant?.stock ?? 0;
-        await api.patch<ProductVariant, Pick<ProductVariant, "stock">>(`/api/product-variants/${item.variant_id}`, {
-            stock: productStock + item.quantity,
+      for (const order of ordersToCancel) {
+        await api.patch<Order, Pick<Order, "status_id">>(`/api/orders/${order.id}`, {
+          status_id: ORDER_STATUS_IDS.CANCELED,
         });
+        for (const item of order.items) {
+          const productVariant = await api.get<ProductVariant>(`/api/product-variants/${item?.variant_id}`);
+          const productStock = productVariant?.stock ?? 0;
+          await api.patch<ProductVariant, Pick<ProductVariant, "stock">>(`/api/product-variants/${item.variant_id}`, {
+            stock: productStock + item.quantity,
+          });
+        }
       }
-      message.success("Da huy don hang");
+      message.success(`Da huy ${ordersToCancel.length} don hang`);
+      setSelectedOrderIds([]);
       await loadOrders();
     } catch (error) {
       const err = error as Error;
@@ -229,6 +243,16 @@ export default function MyOrdersPage() {
               <Button icon={<ReloadOutlined />} onClick={() => void loadOrders()} loading={loading}>
                 Tai lai
               </Button>
+              <Button
+                danger
+                disabled={loading || selectedOrderIds.length === 0}
+                onClick={() => {
+                  const selectedOrders = orders.filter((order) => selectedOrderIds.includes(order.id));
+                  void cancelOrders(selectedOrders);
+                }}
+              >
+                Huy da chon ({selectedOrderIds.length})
+              </Button>
             </Space>
           </Card>
 
@@ -242,6 +266,13 @@ export default function MyOrdersPage() {
                 rowKey="id"
                 dataSource={orders}
                 pagination={{ pageSize: 8 }}
+                rowSelection={{
+                  selectedRowKeys: selectedOrderIds,
+                  onChange: (selectedRowKeys) => setSelectedOrderIds(selectedRowKeys as number[]),
+                  getCheckboxProps: (record) => ({
+                    disabled: !CANCELLABLE_STATUS_IDS.has(record.status_id) || loading,
+                  }),
+                }}
                 expandable={{
                   expandedRowRender: (record) => (
                     <List
@@ -277,7 +308,7 @@ export default function MyOrdersPage() {
                           danger
                           size="small"
                           disabled={!CANCELLABLE_STATUS_IDS.has(record.status_id) || loading}
-                          onClick={() => void cancelOrder(record)}
+                          onClick={() => void cancelOrders([record])}
                         >
                           Huy order
                         </Button>

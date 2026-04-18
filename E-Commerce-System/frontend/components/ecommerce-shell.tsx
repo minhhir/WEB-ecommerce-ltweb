@@ -54,14 +54,14 @@ export function EcommerceShell({
 
         <Space wrap>
           <Button type={pathname === "/marketplace" ? "primary" : "default"} onClick={() => router.push("/marketplace")}>
-            Trang mua sam
+            Trang mua sắm
           </Button>
           <Dropdown
             menu={{
               items: [
                 {
                   key: "my-orders",
-                  label: "Xem danh sach don hang",
+                  label: "Xem danh sách đơn hàng",
                   onClick: () => router.push("/my-orders"),
                 },
               ],
@@ -69,24 +69,24 @@ export function EcommerceShell({
             trigger={["hover"]}
           >
             <Button type={pathname === "/my-orders" ? "primary" : "default"}>
-              Don hang <DownOutlined />
+              Đơn hàng <DownOutlined />
             </Button>
           </Dropdown>
           {showSellerPage && (
             <Button type={pathname === "/seller" ? "primary" : "default"} onClick={() => router.push("/seller")}>
-              Kho nguoi ban
+              Kho người bán
             </Button>
           )}
           {showAdminPage && (
             <Button type={pathname === "/admin" ? "primary" : "default"} onClick={() => router.push("/admin")}>
-              Quan tri
+              Quản trị
             </Button>
           )}
           <Button icon={<UserOutlined />} onClick={() => router.push(roleHome)}>
-            Trang chu
+            Trang chủ
           </Button>
           <Button icon={<LogoutOutlined />} onClick={() => logout()}>
-            Dang xuat
+            Đăng xuất
           </Button>
         </Space>
       </Header>

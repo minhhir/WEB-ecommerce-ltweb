@@ -17,6 +17,7 @@ class Product(db.Model, SerializerMixin, CrudMixin):
 	id = db.Column(db.Integer, primary_key=True)
 	name = db.Column(db.String(255), nullable=False)
 	description = db.Column(db.Text)
+	image_src = db.Column(db.String(512))
 	seller_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
 	category_id = db.Column(db.Integer, db.ForeignKey("categories.id"), nullable=False)
 	discount = db.Column(db.Numeric(5, 2), nullable=False, server_default="0")
@@ -67,7 +68,7 @@ class VariantAttribute(db.Model, SerializerMixin, CrudMixin):
 
 	id = db.Column(db.Integer, primary_key=True)
 	variant_id = db.Column(db.Integer, db.ForeignKey("product_variants.id", ondelete="CASCADE"), nullable=False)
-	option_value_id = db.Column(db.Integer, db.ForeignKey("product_option_values.id"), nullable=False)
+	option_value_id = db.Column(db.Integer, db.ForeignKey("product_option_values.id"), nullable=True)
 
 	variant = db.relationship("ProductVariant", back_populates="attributes", lazy="joined")
 	option_value = db.relationship("ProductOptionValue", lazy="joined")

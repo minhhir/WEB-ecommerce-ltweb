@@ -31,6 +31,8 @@ export interface Product {
   category_id: number;
   category_name?: string;
   discount?: number;
+  image_src?: string;
+  image?: string;
 }
 
 export interface ProductOption {
