@@ -1,575 +1,306 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { App as AntApp, Button, Card, Col, Drawer, Empty, Form, InputNumber, List, Modal, Row, Select, Space, Tag, Typography } from "antd";
-import { ShoppingCartOutlined } from "@ant-design/icons";
+import { useState, useEffect } from "react";
+import { Card, Button, Modal, Input, Rate, List, Avatar, message, Row, Col, Spin, Empty, Typography } from "antd";
+import { ShoppingCartOutlined, MessageOutlined } from "@ant-design/icons";
 import { api } from "@/lib/api";
-import { CartItem, Order, OrderItem, Product, ProductOption, ProductOptionValue, ProductVariant } from "@/types";
-import { useSession } from "@/components/session-provider";
 
-const { Paragraph, Text } = Typography;
+const { Search, TextArea } = Input;
+const { Title, Text } = Typography;
+
+// Định nghĩa các interface cơ bản
+interface Product {
+  id: number;
+  name: string;
+  description: string;
+  price: number;
+  stock_quantity: number;
+  image_url: string;
+  seller_id: number;
+}
+
+interface Review {
+  id: number;
+  rating: number;
+  comment: string;
+  user_name: string;
+  created_at: string;
+}
 
 interface ProductBrowserProps {
   allowPurchase?: boolean;
 }
 
-interface VariantAttribute {
-  variant_id: number;
-  option_value_id: number;
-}
-
-interface OrderCreatePayload {
-  user_id: number;
-  seller_id: number;
-  total_price: number;
-  status_id: number;
-  voucher_discount: number;
-}
-
-const ORDER_STATUS_IDS = {
-  PENDING: 1,
-  CONFIRMED: 2,
-  SHIPPING: 3,
-  DELIVERED: 4,
-  CANCELED: 5,
-  PROCESSING: 6,
-  COMPLETED: 7,
-} as const;
-
-function getVariantOptionValueIds(variant: ProductVariant): number[] {
-  return (variant.option_value_ids ?? []).filter((value) => Number.isFinite(value));
-}
-
-function groupValuesByOption(optionValues: ProductOptionValue[]): Record<number, ProductOptionValue[]> {
-  return optionValues.reduce<Record<number, ProductOptionValue[]>>((accumulator, value) => {
-    const currentValues = accumulator[value.option_id] ?? [];
-    accumulator[value.option_id] = [...currentValues, value];
-    return accumulator;
-  }, {});
-}
-
-function buildSelectionFromVariant(variant: ProductVariant, optionValues: ProductOptionValue[]): Record<number, number> {
-  const selection: Record<number, number> = {};
-  const variantOptionValueIds = new Set(getVariantOptionValueIds(variant));
-
-  optionValues.forEach((value) => {
-    if (variantOptionValueIds.has(value.id)) {
-      selection[value.option_id] = value.id;
-    }
-  });
-
-  return selection;
-}
-
-export function ProductBrowser({ allowPurchase = true }: Readonly<ProductBrowserProps>) {
-  const { message } = AntApp.useApp();
-  const { currentUser } = useSession();
-  const [loading, setLoading] = useState(false);
+export function ProductBrowser({ allowPurchase }: ProductBrowserProps) {
+  // State quản lý danh sách sản phẩm & tìm kiếm
   const [products, setProducts] = useState<Product[]>([]);
-  const [orderStatuses, setOrderStatuses] = useState<Array<{ id: number; name: string }>>([]);
+  const [loading, setLoading] = useState(false);
+
+  // State quản lý Modal chi tiết & Đánh giá
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [productVariants, setProductVariants] = useState<ProductVariant[]>([]);
-  const [productOptions, setProductOptions] = useState<ProductOption[]>([]);
-  const [optionValues, setOptionValues] = useState<ProductOptionValue[]>([]);
-  const [detailVisible, setDetailVisible] = useState(false);
-  const [selectedOptionValueIds, setSelectedOptionValueIds] = useState<Record<number, number>>({});
-  const [quantity, setQuantity] = useState(1);
-  const [cartVisible, setCartVisible] = useState(false);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
-  const optionValuesByOption = useMemo(() => groupValuesByOption(optionValues), [optionValues]);
+  // State cho Form viết Đánh giá mới
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const selectedVariant = useMemo(() => {
-    const selectedIds = Object.values(selectedOptionValueIds).filter(Boolean);
-    if (selectedIds.length === 0 || productVariants.length === 0) {
-      return null;
+  // 1. Fetch danh sách sản phẩm (Hỗ trợ Search)
+  const fetchProducts = async (keyword = "") => {
+    setLoading(true);
+    try {
+      // Gọi API lấy sản phẩm, gắn thêm params ?q=
+      const res: any = await api.get(`/api/products?q=${keyword}&per_page=50`);
+      // api.ts đã cấu hình trả về data trực tiếp, ta kiểm tra linh hoạt để tránh lỗi
+      setProducts(Array.isArray(res) ? res : res?.data || []);
+    } catch (error: any) {
+      message.error(error.message || "Lỗi tải danh sách sản phẩm");
+    } finally {
+      setLoading(false);
     }
-
-    const directMatch = productVariants.find((variant) => {
-      const rawIds = getVariantOptionValueIds(variant);
-      if (rawIds.length === 0 || rawIds.length !== selectedIds.length) {
-        return false;
-      }
-
-      return selectedIds.every((id) => rawIds.includes(id));
-    });
-
-    if (directMatch) {
-      return directMatch;
-    }
-
-    const selectedValueTexts = optionValues
-      .filter((value) => selectedIds.includes(value.id))
-      .map((value) => value.value.trim().toLowerCase())
-      .filter((value) => value.length > 0);
-
-    if (selectedValueTexts.length === 0) {
-      return null;
-    }
-
-    return (
-      productVariants.find((variant) => {
-        const sku = variant.sku_code.toLowerCase();
-        return selectedValueTexts.every((valueText) => sku.includes(valueText));
-      }) ?? null
-    );
-  }, [optionValues, productVariants, selectedOptionValueIds]);
-
-  const totalCart = useMemo(
-    () => cart.reduce((accumulator, item) => accumulator + item.unitPrice * item.quantity, 0),
-    [cart],
-  );
-
-  const hasAnyVariantOptionMapping = useMemo(
-    () => productVariants.some((variant) => getVariantOptionValueIds(variant).length > 0),
-    [productVariants],
-  );
-
-  const fetchVariantOptionValueIds = async (variantId: number): Promise<number[]> => {
-    const candidatePaths = [
-      `/api/variant-attributes/by-variant/${variantId}`,
-      `/api/variant-attributes/by-variant-id/${variantId}`,
-      `/api/variant-attributes?variant_id=${variantId}`,
-    ];
-
-    for (const path of candidatePaths) {
-      try {
-        const attributes = await api.get<VariantAttribute[]>(path);
-        const optionValueIds = attributes
-          .map((attribute) => attribute.option_value_id)
-          .filter((value) => Number.isFinite(value));
-        if (optionValueIds.length > 0) {
-          return optionValueIds;
-        }
-      } catch {
-        // Try next candidate path silently.
-      }
-    }
-
-    return [];
   };
 
-  const hasAvailableCombination = (candidateSelections: Record<number, number>) => {
-    const candidateIds = Object.values(candidateSelections).filter(Boolean);
-    if (candidateIds.length === 0) {
-      return false;
-    }
-
-    return productVariants.some((variant) => {
-      const variantOptionValueIds = getVariantOptionValueIds(variant);
-      return variant.stock > 0 && candidateIds.every((id) => variantOptionValueIds.includes(id));
-    });
-  };
-
-  const isOptionValueDisabled = (optionId: number, valueId: number) => {
-    if (!hasAnyVariantOptionMapping) {
-      return false;
-    }
-
-    const candidateSelections = {
-      ...selectedOptionValueIds,
-      [optionId]: valueId,
-    };
-
-    return !hasAvailableCombination(candidateSelections);
-  };
+  // Tự động load sản phẩm khi vào trang
   useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      api.get<Product[]>("/api/products"),
-      allowPurchase ? api.get<Array<{ id: number; name: string }>>("/api/admin/order-statuses") : Promise.resolve([]),
-    ])
-      .then(([productData, statuses]) => {
-        setProducts(productData);
-        setOrderStatuses(statuses.length > 0 ? statuses : [{ id: ORDER_STATUS_IDS.PENDING, name: "dang cho" }]);
-      })
-      .catch((error: Error) => message.error(error.message))
-      .finally(() => setLoading(false));
-  }, [allowPurchase, message]);
+    fetchProducts();
+  }, []);
 
-  const fetchProductDetail = async (product: Product) => {
-    setLoading(true);
+  // 2. Fetch danh sách review của 1 sản phẩm cụ thể
+  const fetchReviews = async (productId: number) => {
+    setReviewLoading(true);
+    try {
+      const res: any = await api.get(`/api/products/${productId}/reviews`);
+      setReviews(Array.isArray(res) ? res : res?.data || []);
+    } catch (error) {
+      message.error("Không thể tải đánh giá sản phẩm");
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  // Mở Modal xem chi tiết
+  const handleOpenProduct = (product: Product) => {
     setSelectedProduct(product);
-    setDetailVisible(true);
-    setSelectedOptionValueIds({});
-    setQuantity(1);
+    setIsModalVisible(true);
+    fetchReviews(product.id); // Load comment ngay khi mở
+  };
 
+  // Đóng Modal và clear dữ liệu rác
+  const handleCloseModal = () => {
+    setIsModalVisible(false);
+    setSelectedProduct(null);
+    setReviews([]);
+    setComment("");
+    setRating(5);
+  };
+
+  // 3. Hàm gửi Review mới lên Backend
+  const submitReview = async () => {
+    if (!selectedProduct) return;
+    if (!comment.trim()) {
+      return message.warning("Vui lòng nhập nội dung bình luận!");
+    }
+
+    setSubmitting(true);
     try {
-      const [variantData, options] = await Promise.all([
-        api.get<ProductVariant[]>(`/api/product-variants/by-product/${product.id}`),
-        api.get<ProductOption[]>(`/api/product-options/by-product/${product.id}`),
-      ]);
-
-      const variants = await Promise.all(
-        variantData.map(async (variant) => {
-          const existingOptionValueIds = getVariantOptionValueIds(variant);
-          if (existingOptionValueIds.length > 0) {
-            return variant;
-          }
-
-          const hydratedOptionValueIds = await fetchVariantOptionValueIds(variant.id);
-          return {
-            ...variant,
-            option_value_ids: hydratedOptionValueIds,
-          };
-        }),
-      );
-
-      setProductVariants(variants);
-      setProductOptions(options);
-
-      const valuesByOption = await Promise.all(
-        options.map((option) => api.get<ProductOptionValue[]>(`/api/product-option-values/by-option/${option.id}`)),
-      );
-      const flattenedValues = valuesByOption.flat();
-      const groupedValues = groupValuesByOption(flattenedValues);
-      setOptionValues(flattenedValues);
-
-      const preferredVariant =
-        variants.find((variant) => variant.stock > 0 && getVariantOptionValueIds(variant).length > 0) ??
-        variants.find((variant) => getVariantOptionValueIds(variant).length > 0) ??
-        variants[0] ??
-        null;
-
-      if (preferredVariant) {
-        setSelectedOptionValueIds(buildSelectionFromVariant(preferredVariant, flattenedValues));
-      } else {
-        const defaultSelections: Record<number, number> = {};
-        options.forEach((option) => {
-          const firstValue = groupedValues[option.id]?.[0];
-          if (firstValue) {
-            defaultSelections[option.id] = firstValue.id;
-          }
-        });
-        setSelectedOptionValueIds(defaultSelections);
-      }
-    } catch (error) {
-      const err = error as Error;
-      message.error(err.message);
+      await api.post(`/api/products/${selectedProduct.id}/reviews`, {
+        rating: rating,
+        comment: comment,
+      });
+      message.success("Cảm ơn bạn đã đánh giá!");
+      setComment(""); // Reset form
+      setRating(5);
+      fetchReviews(selectedProduct.id); // Gọi lại API để hiển thị comment vừa đăng
+    } catch (error: any) {
+      message.error(error.message || "Bạn cần đăng nhập để đánh giá");
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
-  const addToCart = (buyNow = false) => {
-    if (!allowPurchase) {
-      return;
-    }
-
-    if (!selectedProduct || !selectedVariant) {
-      message.warning("Hay chon bien the san pham");
-      return;
-    }
-
-    if (selectedVariant.stock <= 0) {
-      message.warning("Bien the nay da het hang");
-      return;
-    }
-
-    const missingOption = productOptions.find(
-      (option) => optionValues.some((value) => value.option_id === option.id) && !selectedOptionValueIds[option.id],
-    );
-
-    const selectedValues = optionValues.filter((value) => selectedOptionValueIds[value.option_id] === value.id);
-    const optionSummary = selectedValues.length > 0 ? selectedValues.map((value) => value.value).join(" / ") : undefined;
-    const lineKey = `${selectedVariant.id}-${selectedValues.map((value) => value.id).sort((a, b) => a - b).join("-") || "base"}`;
-
-    setCart((previous) => {
-      const existing = previous.find((item) => item.lineKey === lineKey);
-      if (existing) {
-        return previous.map((item) =>
-          item.lineKey === lineKey
-            ? {
-                ...item,
-                quantity: item.quantity + quantity,
-              }
-            : item,
-        );
-      }
-
-      return [
-        ...previous,
-        {
-          lineKey,
-          variantId: selectedVariant.id,
-          productId: selectedProduct.id,
-          sellerId: selectedProduct.seller_id,
-          productName: selectedProduct.name,
-          skuCode: selectedVariant.sku_code,
-          unitPrice: selectedVariant.price,
-          quantity,
-          optionSummary,
-        },
-      ];
-    });
-
-    message.success("Da them vao gio hang");
-    if (buyNow) {
-      setCartVisible(true);
-    }
+  // Xử lý thêm vào giỏ hàng (Tạm thời là Mock)
+  const handleAddToCart = (e: React.MouseEvent, product: Product) => {
+    e.stopPropagation(); // Ngăn sự kiện click làm mở Modal
+    message.success(`Đã thêm ${product.name} vào giỏ hàng!`);
   };
-
-  const removeCartItem = (lineKeyToRemove: string) => {
-    setCart((previous) => previous.filter((item) => item.lineKey !== lineKeyToRemove));
-  };
-
-  const placeOrder = async () => {
-    if (!allowPurchase) {
-      return;
-    }
-
-    if (!currentUser) {
-      message.warning("Hay dang nhap");
-      return;
-    }
-
-    if (cart.length === 0) {
-      message.warning("Gio hang dang trong");
-      return;
-    }
-
-    const statusId = orderStatuses.some((item) => item.id === ORDER_STATUS_IDS.PENDING)
-      ? ORDER_STATUS_IDS.PENDING
-      : orderStatuses[0]?.id ?? ORDER_STATUS_IDS.PENDING;
-    const cartBySeller = cart.reduce<Record<number, CartItem[]>>((accumulator, item) => {
-      const currentItems = accumulator[item.sellerId] ?? [];
-      accumulator[item.sellerId] = [...currentItems, item];
-      return accumulator;
-    }, {});
-
-    setLoading(true);
-    try {
-      await Promise.all(
-        Object.entries(cartBySeller).map(async ([sellerIdText, sellerItems]) => {
-          const sellerId = Number(sellerIdText);
-          const sellerTotal = sellerItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-
-          const order = await api.post<Order, OrderCreatePayload>("/api/orders", {
-            user_id: currentUser.id,
-            seller_id: sellerId,
-            total_price: sellerTotal,
-            status_id: statusId,
-            voucher_discount: 0,
-          });
-
-          await Promise.all(
-            sellerItems.map((item) =>
-              api.post<OrderItem, Omit<OrderItem, "id">>("/api/order-items", {
-                order_id: order.id,
-                variant_id: item.variantId,
-                unit_price: item.unitPrice,
-                quantity: item.quantity,
-              }),
-            ),
-          );
-        }),
-      );
-
-      message.success("Dat hang thanh cong");
-      setCart([]);
-      setCartVisible(false);
-    } catch (error) {
-      const err = error as Error;
-      message.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const selectedValueTextByOptionId = useMemo(() => {
-    return productOptions.reduce<Record<number, string>>((accumulator, option) => {
-      const selectedValue = optionValues.find((value) => value.option_id === option.id && selectedOptionValueIds[option.id] === value.id);
-      if (selectedValue) {
-        accumulator[option.id] = selectedValue.value;
-      }
-      return accumulator;
-    }, {});
-  }, [optionValues, productOptions, selectedOptionValueIds]);
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      {allowPurchase && (
-        <Button icon={<ShoppingCartOutlined />} onClick={() => setCartVisible(true)} disabled={cart.length === 0}>
-          Gio hang ({cart.length})
-        </Button>
-      )}
+    <div>
+      {/* --- Thanh tìm kiếm --- */}
+      <div className="mb-6 flex justify-between items-center bg-white p-4 rounded-lg shadow-sm">
+        <Title level={4} style={{ margin: 0 }}>Danh sách Sản phẩm</Title>
+        <Search
+          placeholder="Nhập tên sản phẩm cần tìm..."
+          allowClear
+          enterButton="Tìm kiếm"
+          size="large"
+          onSearch={(value) => fetchProducts(value)}
+          style={{ maxWidth: 400 }}
+        />
+      </div>
 
-      <Row gutter={[16, 16]}>
-        {products.map((product) => (
-          <Col xs={24} sm={12} lg={8} key={product.id}>
-            <Card
-              className="surface-card"
-              title={product.name}
-              extra={<Tag color="green">-{product.discount ?? 0}%</Tag>}
-              actions={[
-                <Button type="link" key="detail" onClick={() => void fetchProductDetail(product)}>
-                  Xem chi tiet
-                </Button>,
-                allowPurchase ? (
-                  <Button
-                    type="link"
-                    key="buy"
-                    onClick={async () => {
-                      await fetchProductDetail(product);
-                      setCartVisible(true);
-                    }}
-                  >
-                    Mua
-                  </Button>
-                ) : (
-                  <span key="view-only">Xem</span>
-                ),
-              ]}
-            >
-              <Paragraph ellipsis={{ rows: 2 }}>{product.description || "San pham dang cap nhat mo ta"}</Paragraph>
-              <Space>
-                <Tag color="blue">{product.category_name || `Category #${product.category_id}`}</Tag>
-                <Tag color="gold">Shop: {product.seller_name || product.seller_id}</Tag>
-              </Space>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-
-      {!loading && products.length === 0 && <Empty description="Chua co san pham" />}
-
-      <Modal
-        open={detailVisible}
-        title={selectedProduct?.name || "Chi tiet"}
-        onCancel={() => setDetailVisible(false)}
-        footer={
-          allowPurchase
-            ? [
-                <Button key="close" onClick={() => setDetailVisible(false)}>
-                  Dong
-                </Button>,
-                <Button key="cart" type="primary" onClick={() => addToCart(false)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
-                  Them vao gio
-                </Button>,
-                <Button key="buy" type="primary" onClick={() => addToCart(true)} disabled={!selectedVariant || selectedVariant.stock <= 0}>
-                  Mua ngay
-                </Button>,
-              ]
-            : [
-                <Button key="close" type="primary" onClick={() => setDetailVisible(false)}>
-                  Dong
-                </Button>,
-              ]
-        }
-      >
-        <Space direction="vertical" size={10} style={{ width: "100%" }}>
-          <Paragraph>{selectedProduct?.description || "Khong co mo ta"}</Paragraph>
-
-          {productOptions.length > 0 && (
-            <Card size="small" title="Lua chon san pham">
-              <Space direction="vertical" style={{ width: "100%" }}>
-                {productOptions.map((option) => (
-                  <Form.Item key={option.id} label={option.name} style={{ marginBottom: 8 }}>
-                    <Select
-                      value={selectedOptionValueIds[option.id]}
-                      onChange={(value) =>
-                        setSelectedOptionValueIds((previous) => ({
-                          ...previous,
-                          [option.id]: value,
-                        }))
-                      }
-                      options={(optionValuesByOption[option.id] ?? []).map((value) => ({
-                        value: value.id,
-                        label: `${value.value}`,
-                        disabled: isOptionValueDisabled(option.id, value.id),
-                      }))}
-                      placeholder={`Chon ${option.name}`}
-                    />
-                  </Form.Item>
-                ))}
-              </Space>
-            </Card>
-          )}
-
-          <Card size="small" title="Bien the duoc chon">
-            {selectedVariant ? (
-              <Space direction="vertical" style={{ width: "100%" }}>
-                <Text>SKU: {selectedVariant.sku_code}</Text>
-                <Text>Gia: {selectedVariant.price} VND</Text>
-                <Text>
-                  Ton kho: <Tag color={selectedVariant.stock > 0 ? "green" : "red"}>{selectedVariant.stock}</Tag>
-                </Text>
-                {Object.keys(selectedValueTextByOptionId).length > 0 && (
-                  <Space wrap>
-                    {productOptions.map((option) => {
-                      const valueText = selectedValueTextByOptionId[option.id];
-                      return valueText ? <Tag key={option.id}>{`${option.name}: ${valueText}`}</Tag> : null;
-                    })}
-                  </Space>
-                )}
-              </Space>
-            ) : (
-              <Text type="secondary">Khong tim thay bien the phu hop voi lua chon hien tai</Text>
-            )}
-          </Card>
-
-          {allowPurchase && (
-            <Form layout="vertical">
-              <Form.Item label="So luong">
-                <InputNumber min={1} max={selectedVariant?.stock || 1} value={quantity} onChange={(value) => setQuantity(value || 1)} style={{ width: "100%" }} />
-              </Form.Item>
-            </Form>
-          )}
-        </Space>
-      </Modal>
-
-      {allowPurchase && (
-        <Drawer
-          title="Gio hang"
-          open={cartVisible}
-          onClose={() => setCartVisible(false)}
-          width={460}
-          extra={
-            <Button type="primary" onClick={placeOrder} disabled={cart.length === 0 || !currentUser} loading={loading}>
-              Dat hang
-            </Button>
-          }
-        >
-          <List
-            dataSource={cart}
-            locale={{ emptyText: "Gio hang trong" }}
-            renderItem={(item) => (
-              <List.Item
-                actions={[
-                  <InputNumber
-                    key="qty"
-                    min={1}
-                    value={item.quantity}
-                    onChange={(value) => {
-                      setCart((previous) =>
-                        previous.map((line) =>
-                          line.lineKey === item.lineKey
-                            ? {
-                                ...line,
-                                quantity: value || 1,
-                              }
-                            : line,
-                        ),
-                      );
-                    }}
-                  />,
-                  <Button danger key="remove" onClick={() => removeCartItem(item.lineKey)}>
-                    Xoa
-                  </Button>,
-                ]}
+      {/* --- Lưới Sản phẩm --- */}
+      {loading ? (
+        <div className="flex justify-center p-10"><Spin size="large" /></div>
+      ) : products.length === 0 ? (
+        <div className="bg-white p-10 rounded-lg shadow-sm">
+          <Empty description="Không tìm thấy sản phẩm nào phù hợp" />
+        </div>
+      ) : (
+        <Row gutter={[16, 16]}>
+          {products.map((product) => (
+            <Col xs={24} sm={12} md={8} lg={6} key={product.id}>
+              <Card
+                hoverable
+                onClick={() => handleOpenProduct(product)}
+                cover={
+                  <img
+                    alt={product.name}
+                    src={product.image_url || "https://placehold.co/400x300?text=No+Image"}
+                    style={{ height: 200, objectFit: "cover" }}
+                  />
+                }
+                actions={
+                  allowPurchase
+                    ? [
+                        <Button
+                          type="primary"
+                          icon={<ShoppingCartOutlined />}
+                          onClick={(e) => handleAddToCart(e, product)}
+                        >
+                          Mua ngay
+                        </Button>,
+                      ]
+                    : []
+                }
               >
-                <List.Item.Meta
-                  title={`${item.productName} (${item.skuCode})`}
-                  description={`${item.optionSummary ? `${item.optionSummary} | ` : ""}${item.unitPrice} VND x ${item.quantity}`}
+                <Card.Meta
+                  title={<span className="text-lg truncate">{product.name}</span>}
+                  description={
+                    <div>
+                      <p className="text-red-500 font-bold text-lg mt-1 mb-2">
+                        {product.price.toLocaleString("vi-VN")} đ
+                      </p>
+                      <p className="text-gray-500 text-sm m-0 line-clamp-2">
+                        {product.description}
+                      </p>
+                    </div>
+                  }
                 />
-              </List.Item>
-            )}
-          />
-          <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-3">
-            <Text strong>Tong tien: {totalCart} VND</Text>
-          </div>
-        </Drawer>
+              </Card>
+            </Col>
+          ))}
+        </Row>
       )}
-    </Space>
+
+      {/* --- Modal Chi tiết sản phẩm & Đánh giá --- */}
+      <Modal
+        title={<Title level={3} className="m-0 border-b pb-4">{selectedProduct?.name}</Title>}
+        open={isModalVisible}
+        onCancel={handleCloseModal}
+        footer={null}
+        width={850}
+        centered
+      >
+        {selectedProduct && (
+          <div className="flex flex-col md:flex-row gap-6 mt-4">
+
+            {/* Cột trái: Ảnh & Thông tin sản phẩm */}
+            <div className="w-full md:w-1/2">
+              <img
+                src={selectedProduct.image_url || "https://placehold.co/400x300?text=No+Image"}
+                alt={selectedProduct.name}
+                className="w-full rounded-lg object-cover mb-4 shadow-sm border"
+              />
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <Text className="text-3xl text-red-600 font-bold block mb-2">
+                  {selectedProduct.price.toLocaleString("vi-VN")} đ
+                </Text>
+                <Text className="block text-gray-500 mb-4">
+                  Kho còn: <strong className="text-black">{selectedProduct.stock_quantity}</strong> sản phẩm
+                </Text>
+                <Text className="block whitespace-pre-wrap text-justify">
+                  {selectedProduct.description}
+                </Text>
+              </div>
+
+              {allowPurchase && (
+                <Button
+                  type="primary"
+                  size="large"
+                  icon={<ShoppingCartOutlined />}
+                  className="mt-4 w-full h-12 text-lg font-semibold"
+                  onClick={(e) => handleAddToCart(e, selectedProduct)}
+                >
+                  Thêm vào giỏ hàng
+                </Button>
+              )}
+            </div>
+
+            {/* Cột phải: Khu vực Đánh giá (Review) */}
+            <div className="w-full md:w-1/2 flex flex-col h-full">
+              <Title level={5} className="mb-4"><MessageOutlined /> Đánh giá từ khách hàng</Title>
+
+              {/* Form Viết Đánh Giá */}
+              {allowPurchase && (
+                <div className="bg-brand-50 border border-brand-200 p-4 rounded-lg mb-4">
+                  <Text strong className="block mb-2 text-brand-800">Gửi đánh giá của bạn</Text>
+                  <Rate value={rating} onChange={setRating} className="mb-3 text-brand-500" />
+                  <TextArea
+                    rows={3}
+                    value={comment}
+                    onChange={(e) => setComment(e.target.value)}
+                    placeholder="Sản phẩm này thế nào? Hãy chia sẻ cùng mọi người nhé..."
+                    className="mb-3 border-gray-300"
+                  />
+                  <Button
+                    type="primary"
+                    onClick={submitReview}
+                    loading={submitting}
+                    className="w-full bg-brand-600 hover:bg-brand-700"
+                  >
+                    Gửi bình luận
+                  </Button>
+                </div>
+              )}
+
+              {/* Danh sách các review đã có */}
+              <div className="flex-1 bg-white border border-gray-100 rounded-lg p-2 shadow-inner">
+                {reviewLoading ? (
+                  <div className="flex justify-center p-10"><Spin /></div>
+                ) : (
+                  <List
+                    className="max-h-80 overflow-y-auto pr-2 custom-scrollbar"
+                    itemLayout="horizontal"
+                    dataSource={reviews}
+                    locale={{ emptyText: "Chưa có đánh giá nào. Hãy là người đầu tiên!" }}
+                    renderItem={(item) => (
+                      <List.Item className="border-b border-gray-100 last:border-0 py-3">
+                        <List.Item.Meta
+                          avatar={
+                            <Avatar className="bg-brand-500 text-white font-bold">
+                              {item.user_name ? item.user_name.charAt(0).toUpperCase() : "U"}
+                            </Avatar>
+                          }
+                          title={
+                            <div className="flex justify-between items-center">
+                              <Text strong className="text-gray-800">{item.user_name}</Text>
+                              <Rate disabled defaultValue={item.rating} className="text-xs" />
+                            </div>
+                          }
+                          description={<Text className="text-gray-600 mt-1 block">{item.comment}</Text>}
+                        />
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
   );
 }

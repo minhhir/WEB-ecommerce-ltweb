@@ -1,6 +1,7 @@
 from flask import Blueprint, request
 from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import IntegrityError
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.extensions import db
 from app.models.product import (
@@ -10,6 +11,7 @@ from app.models.product import (
 	ProductOptionValue,
 	ProductVariant,
 	VariantAttribute,
+	Review,
 )
 from app.models.user import User
 from app.utils.crud import json_payload_or_error
@@ -472,3 +474,44 @@ def list_variant_attributes_by_option_value(option_value_id):
 
 
 list_variant_attributes_by_option_value.__doc__ = foreign_key_doc("Products", "variant attributes", "option_value_id")
+
+
+@bp.get("/products/<int:product_id>/reviews")
+def list_product_reviews(product_id):
+	# Lấy danh sách review của 1 sản phẩm
+	query = Review.query.filter_by(product_id=product_id).order_by(Review.created_at.desc())
+	items, meta = paginate_query(query)
+
+	data = []
+	for item in items:
+		d = serialize_model(item)
+		d["user_name"] = item.user.name if item.user else "Khách"
+		data.append(d)
+	return api_response(data, meta=meta)
+
+
+@bp.post("/products/<int:product_id>/reviews")
+@jwt_required()
+def create_product_review(product_id):
+	# Đăng review mới
+	payload = request.get_json(silent=True) or {}
+	rating = payload.get("rating")
+	comment = payload.get("comment")
+
+	if not rating or not (1 <= int(rating) <= 5):
+		return error_response("Đánh giá phải từ 1 đến 5 sao", status=400)
+
+	user_id = get_jwt_identity()
+
+	# (Tùy chọn) Kiểm tra xem user này đã mua hàng chưa mới cho đánh giá ở đây
+
+	review = Review(
+		product_id=product_id,
+		user_id=user_id,
+		rating=int(rating),
+		comment=comment
+	)
+	db.session.add(review)
+	db.session.commit()
+
+	return api_response(serialize_model(review), message="Đã gửi đánh giá thành công", status=201)

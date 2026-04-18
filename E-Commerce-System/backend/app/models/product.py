@@ -1,5 +1,5 @@
 from app.extensions import db
-from app.models.base import CrudMixin, SerializerMixin
+from app.models.base import CrudMixin, SerializerMixin, TimestampMixin
 
 
 class Category(db.Model, SerializerMixin, CrudMixin):
@@ -71,3 +71,15 @@ class VariantAttribute(db.Model, SerializerMixin, CrudMixin):
 
 	variant = db.relationship("ProductVariant", back_populates="attributes", lazy="joined")
 	option_value = db.relationship("ProductOptionValue", lazy="joined")
+
+class Review(db.Model, SerializerMixin, CrudMixin, TimestampMixin):
+	__tablename__ = "reviews"
+
+	id = db.Column(db.Integer, primary_key=True)
+	product_id = db.Column(db.Integer, db.ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+	user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+	rating = db.Column(db.Integer, nullable=False) # Lưu số sao từ 1 đến 5
+	comment = db.Column(db.Text, nullable=True)
+
+	product = db.relationship("Product", backref=db.backref("reviews", lazy="select", cascade="all, delete-orphan"))
+	user = db.relationship("User", lazy="joined")
